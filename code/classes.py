@@ -44,14 +44,15 @@ class DataPrep:
             return self.df
 
 
-    def find_duplicates(self):
+    def find_duplicate_hits(self):
         # Detect duplicate sentences that might need merging
-        return self.df[(self.df.instance == 1) & self.df.duplicated(subset=['Hit'], keep=False)]
+        return self.df[(self.df.instance == 1) & self.df.duplicated(subset=['Hit'], keep=False)].sort_values('Hit')
+
 
 
     def merge_apc_annotations(self):
         # Merge BIO annotations and rows for hits with multiple instances of APCs
-        pass
+        intermed = self.find_duplicates()
     
     def generate_biolabels_df(self):
         """
@@ -103,13 +104,13 @@ class DataPrep:
     
     
     
-    #%% trialing
-    dat = DataPrep()
-    dat.load_csv('../data/copyright/DWDS_APC_main_redux.csv')
+#%% trialing
+dat = DataPrep()
+dat.load_csv('../data/copyright/DWDS_APC_main_redux.csv')
+
+# %%
+dat.generate_biolabels_df()
     
-    # %%
-    dat.generate_biolabels_df()
     
-    
-    # %%
-    dat.get_df(subset='instance').tail()
+# %%
+dat.find_duplicate_hits()

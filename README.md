@@ -65,6 +65,12 @@ Automatic extraction of adnominal pronoun constructions (and other types of adno
   - downsampling would massively decrease the dataset size
   - also question: upsampling for subcategories?
     - background: in German 1st plural APCs are much more common than 1st or 2nd singular (and I think also than 2nd plural), again reflecting real data patterns
+  - options:
+    - class weights
+    - use ChatGPT for synthetic data
+  - NOTE: when using token-level classification, apparently the lack of balance is not an issue (in fact rather common for O to be much more common than B or I tags)
+    - consequence: not an issue (at least for transformer-based token-level classification, which is probably the most effective way of doing this)
+  
 
 - alternative NLP strategies
   - option 1: marking APCs by bracketting in training data, requires pre-identification of potential candidates (e.g. based on automatic pos-tagging)
@@ -79,7 +85,13 @@ Automatic extraction of adnominal pronoun constructions (and other types of adno
   - include annotations for person/number/case of pronoun?
     - if so: would need to be inferenced for new input in additional pre-processing step
       - how to deal with ambiguities
+
 - evaluate need for/benefit of using SQL db, e.g., for intermediate tables
+
+- DECISIONS:
+  - German data
+  - token-level supervised learning (BERT?)
+  - no extra need for balancing dataset
 
 ### Output: functionality for data pre-processing and input
 

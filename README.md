@@ -103,6 +103,11 @@ Automatic extraction of adnominal pronoun constructions (and other types of adno
   - implement both options with ability to choose and compare performance
   - implementation as class (but functions could be ok)
 
+- notes on implementation:
+  - import csv
+  - tokenize by word and create BIO labels
+  - original data has one row per APC, so sentences with multiple APCs are doubled; a method is implemented to combine the BIO labels for those instances and remove the extra rows
+
 
 ## WP2: Model training and selection
 

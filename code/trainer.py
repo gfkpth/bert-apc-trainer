@@ -43,3 +43,24 @@ trainer = Trainer(
     train_dataset=tokenized_dataset,
     tokenizer=tokenizer
 )
+
+
+from transformers import TrainingArguments, Trainer
+
+training_args = TrainingArguments(
+    output_dir="./results",
+    evaluation_strategy="epoch",
+    per_device_train_batch_size=8,
+    per_device_eval_batch_size=8,
+    num_train_epochs=3,
+    weight_decay=0.01,
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=val_dataset,
+    tokenizer=tokenizer,
+)
+trainer.train()

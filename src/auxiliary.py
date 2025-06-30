@@ -260,345 +260,6 @@ class APCData:
         print("Dataset updated after merging and removing duplicates.")
 
     
-    
-    @timeit     # measure time for executing method
-    def generate_biolabels_df(self):
-        """
-        Tokenise text columns and create bio labels for "Hit" column
-        """
-        for col in self.textcols:
-            self.df['tok_' + col] = self.df[col].apply(lambda x: word_tokenize(str(x), language=self.language) if pd.notnull(x) else [])
-
-        # apply BIO labeling for rows with APCs
-        mask = self.df["instance"] == 1
-        self.df.loc[mask, "biolabels"] = self.df[mask].apply(
-            lambda row: self.generate_biolabels_single(row["tok_Hit"], row["tok_APC"]), axis=1
-        )
-
-        # assign dummy labels to the rest
-        self.df.loc[~mask, "biolabels"] = self.df.loc[~mask, "tok_Hit"].apply(
-            lambda tokens: ["O"] * len(tokens) if isinstance(tokens, list) else []
-        )       
-        
-        mask = self.df["instance"] == 1
-        for idx in self.df[mask].index:
-            tok_hit_len = len(self.df.loc[idx, "tok_Hit"])
-            biolabel_len = len(self.df.loc[idx, "biolabels"])
-            if tok_hit_len != biolabel_len:
-                print(f"Length mismatch at index {idx}: tok_Hit={tok_hit_len}, biolabels={biolabel_len}")                         
-    
-    
-    def generate_biolabels_single(self, sentence_tokens, apc_tokens):
-        """
-        Given tokenized sentence and tokenized APC, return BIO labels for sentence.
-        All instances of the same APC in the same sentence are marked, i.e. we can capture repetitions appropriately. 
-        In line with what the base dataset annotation provides, however, this only works for one specific APC.
-        """
-        if not sentence_tokens or not apc_tokens:
-            return ["O"] * len(sentence_tokens) if sentence_tokens else []
-        
-        labels = ["O"] * len(sentence_tokens)
-        sentence_tokens_lower = [t.lower() for t in sentence_tokens]
-        apc_tokens_lower = [t.lower() for t in apc_tokens]
-        
-        # Check if we have enough tokens left to match
-        for i in range(len(sentence_tokens_lower) - len(apc_tokens_lower) + 1):
-            if sentence_tokens_lower[i:i+len(apc_tokens_lower)] == apc_tokens_lower:
-                labels[i] = "B-APC"
-                for j in range(1, len(apc_tokens_lower)):
-                    if i + j < len(labels):  # Safety check
-                        labels[i + j] = "I-APC"
-        
-        return labels
-
-
-    def tokenize_and_align_labels(self,tokenizer):
-        # Tokenize and align BIO labels, assigning -100 to all elements in context
-        tokenized_inputs = []
-
-        for _, row in self.df.iterrows():
-            # 1. Concatenate tokens
-            full_tokens = row["tok_ContextBefore"] + row["tok_Hit"] + row["tok_ContextAfter"]
-
-            # 2. Create full BIO labels
-            len_before = len(row["tok_ContextBefore"])
-            len_hit = len(row["tok_Hit"])
-            len_after = len(row["tok_ContextAfter"])
-
-            hit_labels = row["biolabels"] if isinstance(row["biolabels"], list) else ["O"] * len_hit
-
-            labels = (
-                [-100] * len_before +
-                [label for label in hit_labels] +
-                [-100] * len_after
-            )
-
-            # 3. Tokenize with is_split_into_words=True
-            tokenized = tokenizer(
-                full_tokens,
-                is_split_into_words=True,
-                truncation=True,
-                padding="max_length",
-                max_length=64,  # Adjust as needed
-                return_tensors="pt"
-            )
-
-            # 4. Align labels with wordpieces
-            word_ids = tokenized.word_ids(batch_index=0)
-            aligned_labels = []
-            previous_word_idx = None
-            
-            for word_idx in word_ids:
-                if word_idx is None:
-                    aligned_labels.append(-100)
-                else:
-                    label = labels[word_idx]
-                    if label == -100:
-                        aligned_labels.append(-100)
-                    else:
-                        # Handle subword continuation
-                        if word_idx == previous_word_idx:
-                            # This is a continuation of the previous word
-                            if isinstance(label, str) and label.startswith('B-'):
-                                # Convert B- to I- for subword continuations
-                                aligned_labels.append(self.labeltoint[label.replace('B-', 'I-')])
-                            elif isinstance(label, str):
-                                # Keep the same label for I- and O
-                                aligned_labels.append(self.labeltoint[label])
-                            else:
-                                # If label is already an integer, use it directly
-                                aligned_labels.append(label)
-                        else:
-                            # First subword of this word, keep original label
-                            if isinstance(label, str):
-                                aligned_labels.append(self.labeltoint[label])
-                            else:
-                                aligned_labels.append(label)
-                
-                previous_word_idx = word_idx  # FIXED: Update previous_word_idx
-
-            tokenized["labels"] = aligned_labels
-            tokenized_inputs.append(tokenized)
-
-        self.df["tokenized"] = tokenized_inputs
-        return tokenized_inputs
-
-    @timeit     # measure time for executing method
-    def train_test_split_ds(self, tokenizer, train_size=0.7, val_to_test=2/3,random_state=None):
-        """
-        Create train-test-split, save dataframe in object and return huggingface datasets
-        """        
-        self.tokenize_and_align_labels(tokenizer)
-
-        # Convert tensor-based BatchEncoding to Python-native dicts
-        self.df["tokenized_clean"] = self.df["tokenized"].apply(
-            lambda x: {k: np.array(v).squeeze().tolist() for k, v in x.items()}
-        )
-
-        # Train/test split
-        self.train_df, intermed = train_test_split(
-            self.df, train_size=train_size, stratify=self.df["instance"],
-            random_state=random_state
-        )
-        
-        self.val_df, self.test_df = train_test_split(
-            intermed, test_size=val_to_test, stratify=intermed["instance"],
-            random_state=random_state
-        )
-
-        train_dataset = Dataset.from_list(self.train_df["tokenized_clean"].tolist())
-        val_dataset = Dataset.from_list(self.val_df["tokenized_clean"].tolist())
-        test_dataset = Dataset.from_list(self.test_df["tokenized_clean"].tolist())
-
-        return train_dataset, val_dataset, test_dataset
-    
-    # candidate for cleanup?
-    def prepare_dataset_for_tokenization(self):
-        """Convert DataFrame to HuggingFace Dataset format before tokenization"""
-        # Prepare the data in the format expected by HF datasets
-        dataset_dict = {
-            'tok_ContextBefore': self.df['tok_ContextBefore'].tolist(),
-            'tok_Hit': self.df['tok_Hit'].tolist(), 
-            'tok_ContextAfter': self.df['tok_ContextAfter'].tolist(),
-            'biolabels': self.df['biolabels'].tolist(),
-            'instance': self.df['instance'].tolist(),
-        }
-        
-        return Dataset.from_dict(dataset_dict)
-
-    def tokenize_function(self, examples, tokenizer, max_length=64):
-        """Optimized tokenization function for HF datasets.map()"""
-        batch_size = len(examples['tok_Hit'])
-        
-        # Prepare batch data
-        full_tokens_batch = []
-        labels_batch = []
-        
-        for i in range(batch_size):
-            # Concatenate tokens
-            full_tokens = (examples['tok_ContextBefore'][i] + 
-                          examples['tok_Hit'][i] + 
-                          examples['tok_ContextAfter'][i])
-            
-            # Create labels
-            len_before = len(examples['tok_ContextBefore'][i])
-            len_hit = len(examples['tok_Hit'][i])
-            len_after = len(examples['tok_ContextAfter'][i])
-            
-            hit_labels = (examples['biolabels'][i] if 
-                         isinstance(examples['biolabels'][i], list) 
-                         else ["O"] * len_hit)
-            
-            labels = ([-100] * len_before + 
-                     hit_labels + 
-                     [-100] * len_after)
-            
-            full_tokens_batch.append(full_tokens)
-            labels_batch.append(labels)
-        
-        # Batch tokenization
-        tokenized = tokenizer(
-            full_tokens_batch,
-            is_split_into_words=True,
-            truncation=True,
-            padding="max_length",
-            max_length=max_length,
-            return_tensors=None  # Return lists, not tensors
-        )
-        
-        # Align labels for each example in batch
-        aligned_labels_batch = []
-        for i in range(batch_size):
-            word_ids = tokenized.word_ids(batch_index=i)
-            aligned_labels = self._align_labels_with_tokens(
-                word_ids, labels_batch[i]
-            )
-            aligned_labels_batch.append(aligned_labels)
-        
-        tokenized["labels"] = aligned_labels_batch
-        return tokenized
-
-    def _align_labels_with_tokens(self, word_ids, labels):
-        """Helper function to align labels with wordpiece tokens"""
-        aligned_labels = []
-        previous_word_idx = None
-        
-        for word_idx in word_ids:
-            if word_idx is None:
-                aligned_labels.append(-100)
-            else:
-                if word_idx >= len(labels):
-                    aligned_labels.append(-100)
-                    continue
-                    
-                label = labels[word_idx]
-                if label == -100:
-                    aligned_labels.append(-100)
-                else:
-                    if word_idx == previous_word_idx:
-                        # Subword continuation
-                        if isinstance(label, str) and label.startswith('B-'):
-                            aligned_labels.append(self.labeltoint[label.replace('B-', 'I-')])
-                        elif isinstance(label, str):
-                            aligned_labels.append(self.labeltoint[label])
-                        else:
-                            aligned_labels.append(label)
-                    else:
-                        # First subword of word
-                        if isinstance(label, str):
-                            aligned_labels.append(self.labeltoint[label])
-                        else:
-                            aligned_labels.append(label)
-            
-            previous_word_idx = word_idx
-        
-        return aligned_labels
-
-    @timeit                 # measure execution time
-    def train_test_split_ds_threaded(self, tokenizer, train_size=0.7, 
-                                   val_to_test_ratio=2/3, random_state=None, 
-                                   max_workers=None):
-        """
-        Alternative using ThreadPoolExecutor (good for I/O bound tasks)
-        """
-        if max_workers is None:
-            max_workers = min(mp.cpu_count(), 12)
-            
-        print(f"Using {max_workers} threads for tokenization")
-        
-        # Prepare data
-        rows_data = [(idx, row) for idx, row in self.df.iterrows()]
-        
-        # Thread-based processing
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            tokenize_func = partial(
-                self._tokenize_single_row_safe,
-                tokenizer=tokenizer
-            )
-            results = list(executor.map(tokenize_func, rows_data))
-        
-        # Reconstruct results
-        tokenized_dict = {idx: result for idx, result in results}
-        self.df["tokenized_clean"] = [tokenized_dict[idx] for idx in self.df.index]
-
-        # Train/test split
-        self.train_df, intermed = train_test_split(
-            self.df, train_size=train_size, 
-            stratify=self.df["instance"],
-            random_state=random_state
-        )
-        
-        self.val_df, self.test_df = train_test_split(
-            intermed, test_size=val_to_test_ratio, 
-            stratify=intermed["instance"],
-            random_state=random_state
-        )
-        
-        train_dataset = Dataset.from_list(self.train_df["tokenized_clean"].tolist())
-        val_dataset = Dataset.from_list(self.val_df["tokenized_clean"].tolist())
-        test_dataset = Dataset.from_list(self.test_df["tokenized_clean"].tolist())
-
-        
-        return train_dataset, val_dataset, test_dataset
-
-    def _tokenize_single_row_safe(self, row_data, tokenizer):
-        """Thread-safe version of single row tokenization"""
-        idx, row = row_data
-        
-        # Create a copy of tokenizer for thread safety
-        # (though modern transformers tokenizers are generally thread-safe)
-        
-        full_tokens = row["tok_ContextBefore"] + row["tok_Hit"] + row["tok_ContextAfter"]
-        
-        len_before = len(row["tok_ContextBefore"])
-        len_hit = len(row["tok_Hit"])
-        len_after = len(row["tok_ContextAfter"])
-        
-        hit_labels = row["biolabels"] if isinstance(row["biolabels"], list) else ["O"] * len_hit
-        
-        labels = ([-100] * len_before + hit_labels + [-100] * len_after)
-        
-        tokenized = tokenizer(
-            full_tokens,
-            is_split_into_words=True,
-            truncation=True,
-            padding="max_length",
-            max_length=64,
-            return_tensors=None  # Return lists instead of tensors
-        )
-        
-        word_ids = tokenized.word_ids()
-        aligned_labels = self._align_labels_with_tokens(word_ids, labels)
-        
-        result = {
-            'input_ids': tokenized['input_ids'],
-            'attention_mask': tokenized['attention_mask'],
-            'labels': aligned_labels
-        }
-        
-        return idx, result
-    
-    
     ###
     # Experimenting with direct use of datasets
     def create_dataset_from_df(self):
@@ -816,6 +477,350 @@ class APCData:
     def get_test_dataset(self):
         """Return just the test dataset"""
         return self.datasets['test'] if self.datasets else None
+    
+    
+    ######################################
+    # DEPRECATED STUFF slated for removal
+    
+    # @timeit     # measure time for executing method
+    # def generate_biolabels_df(self):
+    #     """
+    #     Tokenise text columns and create bio labels for "Hit" column
+    #     """
+    #     for col in self.textcols:
+    #         self.df['tok_' + col] = self.df[col].apply(lambda x: word_tokenize(str(x), language=self.language) if pd.notnull(x) else [])
+
+    #     # apply BIO labeling for rows with APCs
+    #     mask = self.df["instance"] == 1
+    #     self.df.loc[mask, "biolabels"] = self.df[mask].apply(
+    #         lambda row: self.generate_biolabels_single(row["tok_Hit"], row["tok_APC"]), axis=1
+    #     )
+
+    #     # assign dummy labels to the rest
+    #     self.df.loc[~mask, "biolabels"] = self.df.loc[~mask, "tok_Hit"].apply(
+    #         lambda tokens: ["O"] * len(tokens) if isinstance(tokens, list) else []
+    #     )       
+        
+    #     mask = self.df["instance"] == 1
+    #     for idx in self.df[mask].index:
+    #         tok_hit_len = len(self.df.loc[idx, "tok_Hit"])
+    #         biolabel_len = len(self.df.loc[idx, "biolabels"])
+    #         if tok_hit_len != biolabel_len:
+    #             print(f"Length mismatch at index {idx}: tok_Hit={tok_hit_len}, biolabels={biolabel_len}")                         
+    
+    
+    # def generate_biolabels_single(self, sentence_tokens, apc_tokens):
+    #     """
+    #     Given tokenized sentence and tokenized APC, return BIO labels for sentence.
+    #     All instances of the same APC in the same sentence are marked, i.e. we can capture repetitions appropriately. 
+    #     In line with what the base dataset annotation provides, however, this only works for one specific APC.
+    #     """
+    #     if not sentence_tokens or not apc_tokens:
+    #         return ["O"] * len(sentence_tokens) if sentence_tokens else []
+        
+    #     labels = ["O"] * len(sentence_tokens)
+    #     sentence_tokens_lower = [t.lower() for t in sentence_tokens]
+    #     apc_tokens_lower = [t.lower() for t in apc_tokens]
+        
+    #     # Check if we have enough tokens left to match
+    #     for i in range(len(sentence_tokens_lower) - len(apc_tokens_lower) + 1):
+    #         if sentence_tokens_lower[i:i+len(apc_tokens_lower)] == apc_tokens_lower:
+    #             labels[i] = "B-APC"
+    #             for j in range(1, len(apc_tokens_lower)):
+    #                 if i + j < len(labels):  # Safety check
+    #                     labels[i + j] = "I-APC"
+        
+    #     return labels
+
+
+    # def tokenize_and_align_labels(self,tokenizer):
+    #     # Tokenize and align BIO labels, assigning -100 to all elements in context
+    #     tokenized_inputs = []
+
+    #     for _, row in self.df.iterrows():
+    #         # 1. Concatenate tokens
+    #         full_tokens = row["tok_ContextBefore"] + row["tok_Hit"] + row["tok_ContextAfter"]
+
+    #         # 2. Create full BIO labels
+    #         len_before = len(row["tok_ContextBefore"])
+    #         len_hit = len(row["tok_Hit"])
+    #         len_after = len(row["tok_ContextAfter"])
+
+    #         hit_labels = row["biolabels"] if isinstance(row["biolabels"], list) else ["O"] * len_hit
+
+    #         labels = (
+    #             [-100] * len_before +
+    #             [label for label in hit_labels] +
+    #             [-100] * len_after
+    #         )
+
+    #         # 3. Tokenize with is_split_into_words=True
+    #         tokenized = tokenizer(
+    #             full_tokens,
+    #             is_split_into_words=True,
+    #             truncation=True,
+    #             padding="max_length",
+    #             max_length=64,  # Adjust as needed
+    #             return_tensors="pt"
+    #         )
+
+    #         # 4. Align labels with wordpieces
+    #         word_ids = tokenized.word_ids(batch_index=0)
+    #         aligned_labels = []
+    #         previous_word_idx = None
+            
+    #         for word_idx in word_ids:
+    #             if word_idx is None:
+    #                 aligned_labels.append(-100)
+    #             else:
+    #                 label = labels[word_idx]
+    #                 if label == -100:
+    #                     aligned_labels.append(-100)
+    #                 else:
+    #                     # Handle subword continuation
+    #                     if word_idx == previous_word_idx:
+    #                         # This is a continuation of the previous word
+    #                         if isinstance(label, str) and label.startswith('B-'):
+    #                             # Convert B- to I- for subword continuations
+    #                             aligned_labels.append(self.labeltoint[label.replace('B-', 'I-')])
+    #                         elif isinstance(label, str):
+    #                             # Keep the same label for I- and O
+    #                             aligned_labels.append(self.labeltoint[label])
+    #                         else:
+    #                             # If label is already an integer, use it directly
+    #                             aligned_labels.append(label)
+    #                     else:
+    #                         # First subword of this word, keep original label
+    #                         if isinstance(label, str):
+    #                             aligned_labels.append(self.labeltoint[label])
+    #                         else:
+    #                             aligned_labels.append(label)
+                
+    #             previous_word_idx = word_idx  # FIXED: Update previous_word_idx
+
+    #         tokenized["labels"] = aligned_labels
+    #         tokenized_inputs.append(tokenized)
+
+    #     self.df["tokenized"] = tokenized_inputs
+    #     return tokenized_inputs
+
+    # @timeit     # measure time for executing method
+    # def train_test_split_ds(self, tokenizer, train_size=0.7, val_to_test=2/3,random_state=None):
+    #     """
+    #     Create train-test-split, save dataframe in object and return huggingface datasets
+    #     """        
+    #     self.tokenize_and_align_labels(tokenizer)
+
+    #     # Convert tensor-based BatchEncoding to Python-native dicts
+    #     self.df["tokenized_clean"] = self.df["tokenized"].apply(
+    #         lambda x: {k: np.array(v).squeeze().tolist() for k, v in x.items()}
+    #     )
+
+    #     # Train/test split
+    #     self.train_df, intermed = train_test_split(
+    #         self.df, train_size=train_size, stratify=self.df["instance"],
+    #         random_state=random_state
+    #     )
+        
+    #     self.val_df, self.test_df = train_test_split(
+    #         intermed, test_size=val_to_test, stratify=intermed["instance"],
+    #         random_state=random_state
+    #     )
+
+    #     train_dataset = Dataset.from_list(self.train_df["tokenized_clean"].tolist())
+    #     val_dataset = Dataset.from_list(self.val_df["tokenized_clean"].tolist())
+    #     test_dataset = Dataset.from_list(self.test_df["tokenized_clean"].tolist())
+
+    #     return train_dataset, val_dataset, test_dataset
+    
+    # # candidate for cleanup?
+    # def prepare_dataset_for_tokenization(self):
+    #     """Convert DataFrame to HuggingFace Dataset format before tokenization"""
+    #     # Prepare the data in the format expected by HF datasets
+    #     dataset_dict = {
+    #         'tok_ContextBefore': self.df['tok_ContextBefore'].tolist(),
+    #         'tok_Hit': self.df['tok_Hit'].tolist(), 
+    #         'tok_ContextAfter': self.df['tok_ContextAfter'].tolist(),
+    #         'biolabels': self.df['biolabels'].tolist(),
+    #         'instance': self.df['instance'].tolist(),
+    #     }
+        
+    #     return Dataset.from_dict(dataset_dict)
+
+    # def tokenize_function(self, examples, tokenizer, max_length=64):
+    #     """Optimized tokenization function for HF datasets.map()"""
+    #     batch_size = len(examples['tok_Hit'])
+        
+    #     # Prepare batch data
+    #     full_tokens_batch = []
+    #     labels_batch = []
+        
+    #     for i in range(batch_size):
+    #         # Concatenate tokens
+    #         full_tokens = (examples['tok_ContextBefore'][i] + 
+    #                       examples['tok_Hit'][i] + 
+    #                       examples['tok_ContextAfter'][i])
+            
+    #         # Create labels
+    #         len_before = len(examples['tok_ContextBefore'][i])
+    #         len_hit = len(examples['tok_Hit'][i])
+    #         len_after = len(examples['tok_ContextAfter'][i])
+            
+    #         hit_labels = (examples['biolabels'][i] if 
+    #                      isinstance(examples['biolabels'][i], list) 
+    #                      else ["O"] * len_hit)
+            
+    #         labels = ([-100] * len_before + 
+    #                  hit_labels + 
+    #                  [-100] * len_after)
+            
+    #         full_tokens_batch.append(full_tokens)
+    #         labels_batch.append(labels)
+        
+    #     # Batch tokenization
+    #     tokenized = tokenizer(
+    #         full_tokens_batch,
+    #         is_split_into_words=True,
+    #         truncation=True,
+    #         padding="max_length",
+    #         max_length=max_length,
+    #         return_tensors=None  # Return lists, not tensors
+    #     )
+        
+    #     # Align labels for each example in batch
+    #     aligned_labels_batch = []
+    #     for i in range(batch_size):
+    #         word_ids = tokenized.word_ids(batch_index=i)
+    #         aligned_labels = self._align_labels_with_tokens(
+    #             word_ids, labels_batch[i]
+    #         )
+    #         aligned_labels_batch.append(aligned_labels)
+        
+    #     tokenized["labels"] = aligned_labels_batch
+    #     return tokenized
+
+    # def _align_labels_with_tokens(self, word_ids, labels):
+    #     """Helper function to align labels with wordpiece tokens"""
+    #     aligned_labels = []
+    #     previous_word_idx = None
+        
+    #     for word_idx in word_ids:
+    #         if word_idx is None:
+    #             aligned_labels.append(-100)
+    #         else:
+    #             if word_idx >= len(labels):
+    #                 aligned_labels.append(-100)
+    #                 continue
+                    
+    #             label = labels[word_idx]
+    #             if label == -100:
+    #                 aligned_labels.append(-100)
+    #             else:
+    #                 if word_idx == previous_word_idx:
+    #                     # Subword continuation
+    #                     if isinstance(label, str) and label.startswith('B-'):
+    #                         aligned_labels.append(self.labeltoint[label.replace('B-', 'I-')])
+    #                     elif isinstance(label, str):
+    #                         aligned_labels.append(self.labeltoint[label])
+    #                     else:
+    #                         aligned_labels.append(label)
+    #                 else:
+    #                     # First subword of word
+    #                     if isinstance(label, str):
+    #                         aligned_labels.append(self.labeltoint[label])
+    #                     else:
+    #                         aligned_labels.append(label)
+            
+    #         previous_word_idx = word_idx
+        
+    #     return aligned_labels
+
+    # @timeit                 # measure execution time
+    # def train_test_split_ds_threaded(self, tokenizer, train_size=0.7, 
+    #                                val_to_test_ratio=2/3, random_state=None, 
+    #                                max_workers=None):
+    #     """
+    #     Alternative using ThreadPoolExecutor (good for I/O bound tasks)
+    #     """
+    #     if max_workers is None:
+    #         max_workers = min(mp.cpu_count(), 12)
+            
+    #     print(f"Using {max_workers} threads for tokenization")
+        
+    #     # Prepare data
+    #     rows_data = [(idx, row) for idx, row in self.df.iterrows()]
+        
+    #     # Thread-based processing
+    #     with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    #         tokenize_func = partial(
+    #             self._tokenize_single_row_safe,
+    #             tokenizer=tokenizer
+    #         )
+    #         results = list(executor.map(tokenize_func, rows_data))
+        
+    #     # Reconstruct results
+    #     tokenized_dict = {idx: result for idx, result in results}
+    #     self.df["tokenized_clean"] = [tokenized_dict[idx] for idx in self.df.index]
+
+    #     # Train/test split
+    #     self.train_df, intermed = train_test_split(
+    #         self.df, train_size=train_size, 
+    #         stratify=self.df["instance"],
+    #         random_state=random_state
+    #     )
+        
+    #     self.val_df, self.test_df = train_test_split(
+    #         intermed, test_size=val_to_test_ratio, 
+    #         stratify=intermed["instance"],
+    #         random_state=random_state
+    #     )
+        
+    #     train_dataset = Dataset.from_list(self.train_df["tokenized_clean"].tolist())
+    #     val_dataset = Dataset.from_list(self.val_df["tokenized_clean"].tolist())
+    #     test_dataset = Dataset.from_list(self.test_df["tokenized_clean"].tolist())
+
+        
+    #     return train_dataset, val_dataset, test_dataset
+
+    # def _tokenize_single_row_safe(self, row_data, tokenizer):
+    #     """Thread-safe version of single row tokenization"""
+    #     idx, row = row_data
+        
+    #     # Create a copy of tokenizer for thread safety
+    #     # (though modern transformers tokenizers are generally thread-safe)
+        
+    #     full_tokens = row["tok_ContextBefore"] + row["tok_Hit"] + row["tok_ContextAfter"]
+        
+    #     len_before = len(row["tok_ContextBefore"])
+    #     len_hit = len(row["tok_Hit"])
+    #     len_after = len(row["tok_ContextAfter"])
+        
+    #     hit_labels = row["biolabels"] if isinstance(row["biolabels"], list) else ["O"] * len_hit
+        
+    #     labels = ([-100] * len_before + hit_labels + [-100] * len_after)
+        
+    #     tokenized = tokenizer(
+    #         full_tokens,
+    #         is_split_into_words=True,
+    #         truncation=True,
+    #         padding="max_length",
+    #         max_length=64,
+    #         return_tensors=None  # Return lists instead of tensors
+    #     )
+        
+    #     word_ids = tokenized.word_ids()
+    #     aligned_labels = self._align_labels_with_tokens(word_ids, labels)
+        
+    #     result = {
+    #         'input_ids': tokenized['input_ids'],
+    #         'attention_mask': tokenized['attention_mask'],
+    #         'labels': aligned_labels
+    #     }
+        
+    #     return idx, result
+    
+    
+    
 
 
 

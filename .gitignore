@@ -196,3 +196,6 @@ cython_debug/
 
 data/copyright
 .env
+*cache*
+models
+*results*

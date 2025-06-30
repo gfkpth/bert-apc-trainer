@@ -10,7 +10,7 @@ from transformers import BertTokenizerFast, BertForTokenClassification, Training
 import nltk
 
 nltk.download("punkt")
-from nltk.tokenize import word_tokenize
+from nltk.tokenize import word_tokenize,sent_tokenize
 
 from datasets import Dataset
 from sklearn.model_selection import train_test_split
@@ -20,8 +20,8 @@ from sklearn.metrics import accuracy_score, f1_score
 # %%
 
 # class for data input and pre-processing
-class DataPrep:
-    def __init__(self, language="german"):
+class APCData:
+    def __init__(self, training=False,language="german"):
         self.df = None
         self.labeltoint = {
             'B-APC': 0,
@@ -33,12 +33,38 @@ class DataPrep:
             1: 'I-APC',
             2: 'O'
         }
-        self.language=language
+        self.language=language              # marks (main) language of dataset
+        self.training = training            # markes whether data set is annotated as training data  
         self.textcols = ['ContextBefore', 'Hit', 'ContextAfter','APC']
 
     # loading the csv
     def load_csv(self, path):
         self.df = pd.read_csv(path,index_col='ID', dtype={'instance': int})
+    
+    # read raw strings
+    def load_raw_text(self,text):
+        if self.training:
+            print('load_raw_text() is designed to load non-annotated, raw-text datasets. To use it, please instantiate the APCData object with `training=False`.')
+            return
+        else:
+            # tokenize by sentence
+            sentences = sent_tokenize(text, language=self.language)
+            tmplist = []
+            for i in range(len(sentences)):
+                context_before = sentences[i - 1] if i > 0 else ""
+                hit = sentences[i]
+                context_after = sentences[i + 1] if i < len(sentences) - 1 else ""
+                tmplist.append({
+                    'ContextBefore': context_before,
+                    'Hit': hit, 
+                    'ContextAfter': context_after,
+                    'instance': 0,
+                    'APC': ''
+                    })
+
+            self.df = pd.DataFrame(tmplist)
+            del tmplist
+    
     
     # allowing data output
     def get_df(self,subset=None):
@@ -110,6 +136,9 @@ class DataPrep:
     def df_index(self,index):
         return self.df.loc[index]
                 
+    
+    def word_tokenize_df(self):
+        pass
     
     def generate_biolabels_df(self):
         """
@@ -233,7 +262,7 @@ class DataPrep:
         return tokenized_inputs
 
     
-    def train_test_split_ds(self, tokenizer, test_size=0.2):
+    def train_test_split_ds(self, tokenizer, train_size=0.7, val_to_test=2/3):
         """
         Create train-test-split, save dataframe in object and return huggingface datasets
         """        
@@ -245,14 +274,19 @@ class DataPrep:
         )
 
         # Train/test split
-        self.train_df, self.val_df = train_test_split(
-            self.df, test_size=test_size, stratify=self.df["instance"]
+        self.train_df, intermed = train_test_split(
+            self.df, train_size=train_size, stratify=self.df["instance"]
+        )
+        
+        self.val_df, self.test_df = train_test_split(
+            intermed, test_size=val_to_test, stratify=self.df["instance"]
         )
 
         train_dataset = Dataset.from_list(self.train_df["tokenized_clean"].tolist())
         val_dataset = Dataset.from_list(self.val_df["tokenized_clean"].tolist())
+        test_dataset = Dataset.from_list(self.test_df["tokenized_clean"].tolist())
 
-        return train_dataset, val_dataset
+        return train_dataset, val_dataset, test_dataset
     
     def tokenize_single_row(row_data, tokenizer, labeltoint):
         """Process a single row - designed for multiprocessing"""
@@ -378,3 +412,51 @@ def compute_metrics(eval_pred):
         "accuracy": accuracy_score(labels, predictions),
         "f1": f1_score(labels, predictions, average="weighted")
     }
+    
+
+# to check for utility and inclusion into 
+def predict_labels(model, tokenizer, context_before, hit, context_after, label_map):
+    model.eval()
+
+    # Tokenize manually split input
+    tokens = word_tokenize(context_before) + word_tokenize(hit) + word_tokenize(context_after)
+
+    # Tokenize with BERT tokenizer
+    tokenized = tokenizer(
+        tokens,
+        is_split_into_words=True,
+        return_tensors="pt",
+        truncation=True,
+        padding="max_length",
+        max_length=64,
+    )
+
+    with torch.no_grad():
+        output = model(**tokenized)
+
+    # Get predicted label IDs
+    predictions = torch.argmax(output.logits, dim=-1).squeeze().tolist()
+    word_ids = tokenized.word_ids()
+
+    # Align word-level labels
+    aligned_labels = []
+    last_word_id = None
+    for i, word_id in enumerate(word_ids):
+        if word_id is None or word_id == last_word_id:
+            aligned_labels.append(None)
+        else:
+            aligned_labels.append(predictions[i])
+            last_word_id = word_id
+
+    # Only return tokens + predictions for the Hit section
+    hit_start = len(word_tokenize(context_before))
+    hit_end = hit_start + len(word_tokenize(hit))
+
+    # Map back to readable labels
+    readable_labels = [
+        (tokens[i], label_map[aligned_labels[i]]) 
+        for i in range(len(tokens)) 
+        if aligned_labels[i] is not None and hit_start <= i < hit_end
+    ]
+
+    return readable_labels

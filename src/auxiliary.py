@@ -14,6 +14,8 @@ from nltk.tokenize import word_tokenize
 
 from datasets import Dataset
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, f1_score
+
 
 # %%
 
@@ -231,7 +233,7 @@ class DataPrep:
         return tokenized_inputs
 
     
-    def split_to_dataset(self, tokenizer, test_size=0.2):
+    def train_test_split_ds(self, tokenizer, test_size=0.2):
         """
         Create train-test-split, save dataframe in object and return huggingface datasets
         """        
@@ -346,7 +348,7 @@ class DataPrep:
         
         return tokenized_inputs
 
-    def split_to_dataset_mp(self, tokenizer, test_size=0.2, n_cores=None):
+    def train_test_split_ds_mp(self, tokenizer, test_size=0.2, n_cores=None):
         """Multiprocessing version of split_to_dataset"""
         # Use multiprocessing tokenization
         tokenized_inputs = self.tokenize_and_align_labels_mp(tokenizer, n_cores)
@@ -365,3 +367,14 @@ class DataPrep:
         val_dataset = Dataset.from_list(val_df["tokenized_clean"].tolist())
         
         return train_dataset, val_dataset
+
+
+
+
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    predictions = np.argmax(logits, axis=-1)
+    return {
+        "accuracy": accuracy_score(labels, predictions),
+        "f1": f1_score(labels, predictions, average="weighted")
+    }

@@ -1,6 +1,10 @@
 
 #%%
 import pandas as pd
+import numpy as np
+
+import multiprocessing as mp
+from functools import partial
 
 from transformers import BertTokenizerFast, BertForTokenClassification, TrainingArguments, Trainer
 import nltk
@@ -15,8 +19,7 @@ from sklearn.model_selection import train_test_split
 
 # class for data input and pre-processing
 class DataPrep:
-    def __init__(self, tokenizer_name="bert-base-german-cased",language="german"):
-        self.tokenizer = BertTokenizerFast.from_pretrained(tokenizer_name)
+    def __init__(self, language="german"):
         self.df = None
         self.labeltoint = {
             'B-APC': 0,
@@ -156,13 +159,12 @@ class DataPrep:
         return labels
 
 
-    def tokenize_and_align_labels(self):
+    def tokenize_and_align_labels(self,tokenizer):
         # Tokenize and align BIO labels, assigning -100 to all elements in context
         tokenized_inputs = []
 
         for _, row in self.df.iterrows():
             # 1. Concatenate tokens
-
             full_tokens = row["tok_ContextBefore"] + row["tok_Hit"] + row["tok_ContextAfter"]
 
             # 2. Create full BIO labels
@@ -179,7 +181,7 @@ class DataPrep:
             )
 
             # 3. Tokenize with is_split_into_words=True
-            tokenized = self.tokenizer(
+            tokenized = tokenizer(
                 full_tokens,
                 is_split_into_words=True,
                 truncation=True,
@@ -191,43 +193,175 @@ class DataPrep:
             # 4. Align labels with wordpieces
             word_ids = tokenized.word_ids(batch_index=0)
             aligned_labels = []
+            previous_word_idx = None
+            
             for word_idx in word_ids:
                 if word_idx is None:
                     aligned_labels.append(-100)
                 else:
-                    aligned_labels.append(self.label_to_id(labels[word_idx]))
+                    label = labels[word_idx]
+                    if label == -100:
+                        aligned_labels.append(-100)
+                    else:
+                        # Handle subword continuation
+                        if word_idx == previous_word_idx:
+                            # This is a continuation of the previous word
+                            if isinstance(label, str) and label.startswith('B-'):
+                                # Convert B- to I- for subword continuations
+                                aligned_labels.append(self.labeltoint[label.replace('B-', 'I-')])
+                            elif isinstance(label, str):
+                                # Keep the same label for I- and O
+                                aligned_labels.append(self.labeltoint[label])
+                            else:
+                                # If label is already an integer, use it directly
+                                aligned_labels.append(label)
+                        else:
+                            # First subword of this word, keep original label
+                            if isinstance(label, str):
+                                aligned_labels.append(self.labeltoint[label])
+                            else:
+                                aligned_labels.append(label)
+                
+                previous_word_idx = word_idx  # FIXED: Update previous_word_idx
 
             tokenized["labels"] = aligned_labels
             tokenized_inputs.append(tokenized)
 
+        self.df["tokenized"] = tokenized_inputs
         return tokenized_inputs
 
     
-    def split_to_dataset(self,test_size=0.2):
+    def split_to_dataset(self, tokenizer, test_size=0.2):
         """
         Create train-test-split, save dataframe in object and return huggingface datasets
-        """
+        """        
+        self.tokenize_and_align_labels(tokenizer)
+
+        # Convert tensor-based BatchEncoding to Python-native dicts
+        self.df["tokenized_clean"] = self.df["tokenized"].apply(
+            lambda x: {k: np.array(v).squeeze().tolist() for k, v in x.items()}
+        )
+
+        # Train/test split
+        self.train_df, self.val_df = train_test_split(
+            self.df, test_size=test_size, stratify=self.df["instance"]
+        )
+
+        train_dataset = Dataset.from_list(self.train_df["tokenized_clean"].tolist())
+        val_dataset = Dataset.from_list(self.val_df["tokenized_clean"].tolist())
+
+        return train_dataset, val_dataset
+    
+    def tokenize_single_row(row_data, tokenizer, labeltoint):
+        """Process a single row - designed for multiprocessing"""
+        idx, row = row_data
         
-        self.train_df, self.val_df = train_test_split(self.df, test_size=test_size, stratify=self.df["instance"])
-        train_dataset = Dataset.from_pandas(self.train_df)
-        val_dataset = Dataset.from_pandas(self.val_df)
+        # 1. Concatenate tokens
+        full_tokens = row["tok_ContextBefore"] + row["tok_Hit"] + row["tok_ContextAfter"]
+
+        # 2. Create full BIO labels
+        len_before = len(row["tok_ContextBefore"])
+        len_hit = len(row["tok_Hit"])
+        len_after = len(row["tok_ContextAfter"])
+
+        hit_labels = row["biolabels"] if isinstance(row["biolabels"], list) else ["O"] * len_hit
+
+        labels = (
+            [-100] * len_before +
+            [label for label in hit_labels] +
+            [-100] * len_after
+        )
+
+        # 3. Tokenize with is_split_into_words=True
+        tokenized = tokenizer(
+            full_tokens,
+            is_split_into_words=True,
+            truncation=True,
+            padding="max_length",
+            max_length=64,
+            return_tensors="pt"
+        )
+
+        # 4. Align labels with wordpieces
+        word_ids = tokenized.word_ids(batch_index=0)
+        aligned_labels = []
+        previous_word_idx = None
         
-        return train_dataset,val_dataset
-    
-    
-    
-#%% trialing
-dat = DataPrep()
-dat.load_csv('../data/copyright/DWDS_APC_main_redux.csv')
+        for word_idx in word_ids:
+            if word_idx is None:
+                aligned_labels.append(-100)
+            else:
+                label = labels[word_idx]
+                if label == -100:
+                    aligned_labels.append(-100)
+                else:
+                    if word_idx == previous_word_idx:
+                        if isinstance(label, str) and label.startswith('B-'):
+                            aligned_labels.append(labeltoint[label.replace('B-', 'I-')])
+                        elif isinstance(label, str):
+                            aligned_labels.append(labeltoint[label])
+                        else:
+                            aligned_labels.append(label)
+                    else:
+                        if isinstance(label, str):
+                            aligned_labels.append(labeltoint[label])
+                        else:
+                            aligned_labels.append(label)
+            
+            previous_word_idx = word_idx
 
-# %%
-dat.generate_biolabels_df()
-    
-    
-# %%
-dat.merge_apc_annotations()
+        # Convert to clean format immediately
+        result = {
+            'input_ids': tokenized['input_ids'].squeeze().tolist(),
+            'attention_mask': tokenized['attention_mask'].squeeze().tolist(),
+            'labels': aligned_labels
+        }
+        
+        return idx, result
 
+    def tokenize_and_align_labels_mp(self, tokenizer, n_cores=None):
+        """Multiprocessing version of tokenize_and_align_labels"""
+        if n_cores is None:
+            n_cores = mp.cpu_count() - 1  # Leave one core free
+        
+        print(f"Using {n_cores} cores for tokenization")
+        
+        # Prepare data for multiprocessing
+        row_data = [(idx, row) for idx, row in self.df.iterrows()]
+        
+        # Create partial function with fixed arguments
+        tokenize_func = partial(
+            self.tokenize_single_row, 
+            tokenizer=tokenizer, 
+            labeltoint=self.labeltoint
+        )
+        
+        # Process in parallel
+        with mp.Pool(n_cores) as pool:
+            results = pool.map(tokenize_func, row_data)
+        
+        # Reconstruct the results in original order
+        tokenized_dict = {idx: result for idx, result in results}
+        tokenized_inputs = [tokenized_dict[idx] for idx in self.df.index]
+        
+        return tokenized_inputs
 
-# %%
-
-dat.get_df().groupby('instance')['Hit'].count()
+    def split_to_dataset_mp(self, tokenizer, test_size=0.2, n_cores=None):
+        """Multiprocessing version of split_to_dataset"""
+        # Use multiprocessing tokenization
+        tokenized_inputs = self.tokenize_and_align_labels_mp(tokenizer, n_cores)
+        
+        # Create temporary dataframe with clean tokenized data
+        import pandas as pd
+        temp_df = self.df.copy()
+        temp_df["tokenized_clean"] = tokenized_inputs
+        
+        # Train/test split
+        train_df, val_df = train_test_split(
+            temp_df, test_size=test_size, stratify=temp_df["instance"], random_state=42
+        )
+        
+        train_dataset = Dataset.from_list(train_df["tokenized_clean"].tolist())
+        val_dataset = Dataset.from_list(val_df["tokenized_clean"].tolist())
+        
+        return train_dataset, val_dataset

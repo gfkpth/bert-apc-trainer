@@ -1,36 +1,38 @@
 # %%
-from datasets import Dataset
 from transformers import BertTokenizerFast, BertForTokenClassification, TrainingArguments, Trainer, AutoModelForTokenClassification, AutoTokenizer
 
 import numpy as np
-from sklearn.metrics import classification_report
 
+import auxiliary as aux
 from auxiliary import *
 
+import importlib
+importlib.reload(aux)
+from auxiliary import *
 
+# %%
 # setup BERT
 modelname= "bert-base-german-cased"
 tokenizer = BertTokenizerFast.from_pretrained(modelname)
 model = BertForTokenClassification.from_pretrained(modelname, num_labels=3)  # if using BIO
 
-
 #%% load and prepare data
-dat = APCData(training=True, csvfile='../data/copyright/DWDS_APC_main_redux.csv')
+dat = aux.APCData(training=True, csvfile='../data/copyright/DWDS_APC_main_redux.csv',tokenizer=tokenizer,language='german')
 dat.generate_biolabels_dataset()                 # about 7s with dataframes, about 4s(?) with datasets, far less with caching
 dat.merge_apc_annotations()                 # about 0.03s
+
+# %%
+
+train_dataset, val_dataset, test_dataset = dat.tokenize_and_split_native(cache_dir='./tokenization_cache',
+                                                                         random_state=5,
+                                                                         max_length=128, 
+                                                                         overlap_size=32,
+                                                                         batch_size=1500)  # Get train/val/test splits        # 23s
+
 
 # %%  old implementations
 #train_dataset, val_dataset, test_dataset = dat.train_test_split_ds(tokenizer)               # 18.25s
 #train_dataset, val_dataset, test_dataset = dat.train_test_split_ds_threaded(tokenizer,max_workers=4)      # 8.5s
-
-# %%
-
-datasets = dat.tokenize_and_split_native(tokenizer,num_proc=1,cache_dir='./tokenization_cache',random_state=5,batch_size=512)  # Get train/val/test splits        # 23s
-
-train_dataset = datasets['train']
-val_dataset = datasets['validation']
-test_dataset = datasets['test']
-
 
 # %%
 from transformers import TrainingArguments, Trainer
@@ -64,7 +66,7 @@ trainer.train()
 
 tunedmodel = trainer.model
 
-output_model_path = '../models/BERT_3epochs'
+output_model_path = '../models/BERTfull_3epochs'
 tunedmodel.save_pretrained(output_model_path)
 tokenizer.save_pretrained(output_model_path) # Always save the tokenizer with the model!
 
@@ -72,17 +74,18 @@ print(f"Fine-tuned model and tokenizer saved to: {output_model_path}")
 
 
 # %% load model
+output_model_path = '../models/BERTfull_3epochs'
 
 reloaded_tokenizer = AutoTokenizer.from_pretrained(output_model_path)
 
 reloaded_model = AutoModelForTokenClassification.from_pretrained(output_model_path)
 
 # %%
-tunedmodel.eval()
+reloaded_model.eval()
 
 # Example: If you need to use it with a Trainer for evaluation only
 eval_trainer = Trainer(
-    model=tunedmodel,
+    model=reloaded_model,
     args=training_args, # You might create new args for evaluation or re-use parts
     eval_dataset=test_dataset,
     compute_metrics=compute_metrics
@@ -101,6 +104,7 @@ Leider ist es aber auch nicht so leicht, sich Texte auszudenken. Später können
 Erstmal bleibe ich bei der guten, alten Handarbeit.
 """
 
+# %%
 
 test = APCData(training=False,language='german',strinput=teststring)
 testset = test.prepare_for_inference(tokenizer,cache_dir='tokenization_cache')
@@ -126,8 +130,9 @@ inference_args = TrainingArguments(
 )
 
 inference_trainer = Trainer(
-    model=fine_tuned_model,
+    model=reloaded_model_model,
     args=inference_args,
+    processing_class=reloaded_tokenizer
     # train_dataset=None, # No training
     # eval_dataset=None,  # No evaluation
     # compute_metrics=None # No metrics computation during predict, if not needed
@@ -158,7 +163,7 @@ from transformers import pipeline
 # You need to pass the model and tokenizer objects directly
 token_classifier = pipeline(
     "token-classification",
-    model=fine_tuned_model,
+    model=reloaded_model,
     tokenizer=reloaded_tokenizer,
     # If your 'O' label is 2 and you don't want it in results, specify aggregation_strategy
     # aggregation_strategy="simple" or "first" or "average"
@@ -166,6 +171,11 @@ token_classifier = pipeline(
     # aggregation_strategy="first" # or "average", etc.
 )
 
+# %%
+result = token_classifier(teststring)
+print(result)
+
+#%%
 # Run inference on a single string or a list of strings
 example_text_1 = "This is a sentence with an APC word."
 example_text_2 = "Another sentence for testing APCs."

@@ -23,7 +23,7 @@ dat.merge_apc_annotations()                 # about 0.03s
 
 # %%
 
-train_dataset, val_dataset, test_dataset = dat.tokenize_and_split_native(cache_dir='./tokenization_cache',
+train_dataset, val_dataset, test_dataset = dat.tokenize_and_split_native(#cache_dir='./tokenization_cache',
                                                                          random_state=5,
                                                                          max_length=128, 
                                                                          overlap_size=32,

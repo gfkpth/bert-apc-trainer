@@ -1,5 +1,8 @@
 # Implementation log
 
+- currently `tokenize_dataset` hangs for unknown reasons
+  - before this problem started occurring, `tokenize_and_split_native` hung on trying to get the splits right
+
 - basic version of APCData class is done
   - modified to work with datasets
   - now using BERT tokenisation directly for creation of BIO labels

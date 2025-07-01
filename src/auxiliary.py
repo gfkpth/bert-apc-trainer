@@ -13,6 +13,8 @@ import nltk
 nltk.download("punkt")
 from nltk.tokenize import word_tokenize,sent_tokenize
 
+import torch
+
 from datasets import load_dataset, Dataset, DatasetDict
 import evaluate
 from sklearn.model_selection import train_test_split
@@ -34,13 +36,14 @@ def timeit(func):
 
 # class for data input and pre-processing
 class APCData:
-    def __init__(self, training=False,language="german", csvfile=None, strinput=None):
+    def __init__(self, training=False,language="german", csvfile=None, strinput=None, tokenizer=None):
         # setting core properties of data
         self.language=language              # marks (main) language of dataset
         self.training = training            # markes whether data set is annotated as training data
+        self.tokenizer = tokenizer
         self.dataset = None  # Primary data storage
         self.df = None       # Keep for backward compatibility or if specific Pandas operations are truly needed
-
+        
         if csvfile:
             print(f'Loading csv file {csvfile} into dataset')
             self.dataset = self.load_csv(csvfile)
@@ -147,61 +150,140 @@ class APCData:
     ##################################
     # Generating and combining data
 
-
-                
-
     @timeit
     def generate_biolabels_dataset(self):
         """
-        Tokenize text columns and create bio labels for "Hit" column directly on the dataset.
+        Tokenize "Hit" column with the BERT tokenizer and create BIO labels for it.
+        The labels are directly aligned with BERT's subword tokens.
         """
         if self.dataset is None:
             raise ValueError("No dataset available. Load data first.")
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not set. Please provide a tokenizer when initializing APCData or set it before calling this method.")
 
-        # define the function to apply to each example in the dataset
         def process_example(example):
-            # tokenize text columns
-            example['tok_ContextBefore'] = word_tokenize(str(example['ContextBefore']), language=self.language) if pd.notnull(example['ContextBefore']) else []
-            example['tok_Hit'] = word_tokenize(str(example['Hit']), language=self.language) if pd.notnull(example['Hit']) else []
-            example['tok_ContextAfter'] = word_tokenize(str(example['ContextAfter']), language=self.language) if pd.notnull(example['ContextAfter']) else []
-            example['tok_APC'] = word_tokenize(str(example['APC']), language=self.language) if pd.notnull(example['APC']) else []
+            hit_text = str(example['Hit']) if pd.notnull(example['Hit']) else ""
+            apc_string = str(example['APC']) if pd.notnull(example['APC']) else ""            
 
-            # apply BIO labeling for rows with APCs
-            if example['instance'] == 1:
-                example['biolabels'] = self.generate_biolabels_single(example['tok_Hit'], example['tok_APC'])
-            else:
-                example['biolabels'] = ["O"] * len(example['tok_Hit'])
+            # Tokenize the 'Hit' sentence with BERT tokenizer, getting offsets
+            # This is crucial for aligning with the APC string
+            tokenized_hit = self.tokenizer(
+                hit_text,
+                return_offsets_mapping=True,
+                add_special_tokens=False, # We'll add special tokens later in tokenize_dataset if needed for full sequence
+                truncation=False, # Don't truncate here, handle it in tokenize_dataset
+                padding=False # Don't pad here, handle it in tokenize_dataset
+            )
 
-            # check for length mismatch
-            if len(example['tok_Hit']) != len(example['biolabels']):
-                print(f"Length mismatch: tok_Hit={len(example['tok_Hit'])}, biolabels={len(example['biolabels'])}")
+            # Initialize labels with 'O' for all tokens in the 'Hit' sentence
+            labels = ["O"] * len(tokenized_hit['input_ids'])
+
+            # If it's an instance with an APC, assign B-APC/I-APC labels
+            if example['instance'] == 1 and apc_string:
+                # Find the character start and end of the APC within the Hit text
+                hit_text_lower = hit_text.lower()
+                apc_string_lower = apc_string.lower()
+                apc_start_char = hit_text_lower.find(apc_string_lower)
+                apc_end_char = apc_start_char + len(apc_string)
+
+                if apc_start_char != -1: # APC string found in Hit
+                    is_inside_apc = False
+                    for i, (char_start, char_end) in enumerate(tokenized_hit['offset_mapping']):
+                        # Check if token overlaps with APC
+                        # A token is part of APC if its span is completely within or overlaps with APC span
+                        # For BIO, we want tokens *fully within* the APC span (or starting it).
+                        # Adjust char_start and char_end for token if it's (0,0) due to special token or padding
+                        if char_start is None or char_end is None: # Should not happen with add_special_tokens=False
+                            continue
+
+                        # Check for overlap: [token_start, token_end) vs [apc_start, apc_end)
+                        if max(char_start, apc_start_char) < min(char_end, apc_end_char):
+                            # This token is inside or overlaps with the APC span
+                            if not is_inside_apc:
+                                labels[i] = "B-APC" # First token of the APC
+                                is_inside_apc = True
+                            else:
+                                labels[i] = "I-APC" # Subsequent tokens of the APC
+                        else:
+                            # If we were inside an APC and now we are outside, reset flag
+                            if is_inside_apc:
+                                is_inside_apc = False # End of APC for previous tokens
+                            # labels[i] remains "O"
+
+            # Store the BERT tokenized Hit sequence and its aligned labels
+            example['bert_tok_Hit_input_ids'] = tokenized_hit['input_ids']
+            example['bert_tok_Hit_attention_mask'] = tokenized_hit['attention_mask']
+            example['bert_tok_Hit_offsets'] = tokenized_hit['offset_mapping']
+            example['bert_biolabels'] = labels
 
             return example
 
         # Use .map() for efficient processing
-        self.dataset = self.dataset.map(process_example, num_proc=mp.cpu_count() - 1 if mp.cpu_count() > 1 else 1,
-                                        desc="Generating BIO labels and tokenizing text columns")
+        # Ensure num_proc is correctly handled (e.g., set to 1 if tokenizer isn't picklable or for debugging)
+        # Using num_proc > 1 requires the tokenizer to be picklable, which it usually is.
+        self.dataset = self.dataset.map(
+            process_example,
+            num_proc=mp.cpu_count() - 1 if mp.cpu_count() > 1 else 1,
+            desc="Generating BERT-aligned BIO labels for 'Hit'"
+        )
+
+        # Remove original word_tokenize-based tokenization and biolabels if no longer needed
+        # self.dataset = self.dataset.remove_columns(['tok_ContextBefore', 'tok_Hit', 'tok_ContextAfter', 'tok_APC', 'biolabels'])
+        print("Generated BERT-aligned BIO labels.")
+                
+
+    # @timeit
+    # def generate_biolabels_dataset_old(self):
+    #     """
+    #     Tokenize text columns and create bio labels for "Hit" column directly on the dataset.
+    #     """
+    #     if self.dataset is None:
+    #         raise ValueError("No dataset available. Load data first.")
+
+    #     # define the function to apply to each example in the dataset
+    #     def process_example(example):
+    #         # tokenize text columns
+    #         example['tok_ContextBefore'] = word_tokenize(str(example['ContextBefore']), language=self.language) if pd.notnull(example['ContextBefore']) else []
+    #         example['tok_Hit'] = word_tokenize(str(example['Hit']), language=self.language) if pd.notnull(example['Hit']) else []
+    #         example['tok_ContextAfter'] = word_tokenize(str(example['ContextAfter']), language=self.language) if pd.notnull(example['ContextAfter']) else []
+    #         example['tok_APC'] = word_tokenize(str(example['APC']), language=self.language) if pd.notnull(example['APC']) else []
+
+    #         # apply BIO labeling for rows with APCs
+    #         if example['instance'] == 1:
+    #             example['biolabels'] = self.generate_biolabels_single(example['tok_Hit'], example['tok_APC'])
+    #         else:
+    #             example['biolabels'] = ["O"] * len(example['tok_Hit'])
+
+    #         # check for length mismatch
+    #         if len(example['tok_Hit']) != len(example['biolabels']):
+    #             print(f"Length mismatch: tok_Hit={len(example['tok_Hit'])}, biolabels={len(example['biolabels'])}")
+
+    #         return example
+
+    #     # Use .map() for efficient processing
+    #     self.dataset = self.dataset.map(process_example, num_proc=mp.cpu_count() - 1 if mp.cpu_count() > 1 else 1,
+    #                                     desc="Generating BIO labels and tokenizing text columns")
 
         # Remove original text columns if no longer needed to save memory
         # self.dataset = self.dataset.remove_columns(self.textcols)
 
 
-    def generate_biolabels_single(self, sentence_tokens, apc_tokens):
-        # This method remains largely the same as it operates on single token lists
-        if not sentence_tokens or not apc_tokens:
-            return ["O"] * len(sentence_tokens) if sentence_tokens else []
+    # def generate_biolabels_single(self, sentence_tokens, apc_tokens):
+    #     # This method remains largely the same as it operates on single token lists
+    #     if not sentence_tokens or not apc_tokens:
+    #         return ["O"] * len(sentence_tokens) if sentence_tokens else []
 
-        labels = ["O"] * len(sentence_tokens)
-        sentence_tokens_lower = [t.lower() for t in sentence_tokens]
-        apc_tokens_lower = [t.lower() for t in apc_tokens]
+    #     labels = ["O"] * len(sentence_tokens)
+    #     sentence_tokens_lower = [t.lower() for t in sentence_tokens]
+    #     apc_tokens_lower = [t.lower() for t in apc_tokens]
 
-        for i in range(len(sentence_tokens_lower) - len(apc_tokens_lower) + 1):
-            if sentence_tokens_lower[i:i+len(apc_tokens_lower)] == apc_tokens_lower:
-                labels[i] = "B-APC"
-                for j in range(1, len(apc_tokens_lower)):
-                    if i + j < len(labels):
-                        labels[i + j] = "I-APC"
-        return labels
+    #     for i in range(len(sentence_tokens_lower) - len(apc_tokens_lower) + 1):
+    #         if sentence_tokens_lower[i:i+len(apc_tokens_lower)] == apc_tokens_lower:
+    #             labels[i] = "B-APC"
+    #             for j in range(1, len(apc_tokens_lower)):
+    #                 if i + j < len(labels):
+    #                     labels[i + j] = "I-APC"
+    #     return labels
 
     # Merging duplicates is still best done on a DataFrame if you need to modify rows based on indices
     # and then convert back to a Dataset. Or, try to achieve it with Dataset.group_by and .map if possible.
@@ -226,39 +308,81 @@ class APCData:
         print(f'Found {len(groups)} groups of duplicate rows')
         return [tuple(indices) for indices in step2.sort_values('Hit').groupby('Hit').groups.values()]
 
+    # @timeit
+    # def merge_apc_annotations(self):
+    #     if self.df is None:
+    #         print("No data to merge.")
+    #         return
+    #     else:
+    #         self.df = self.dataset.to_pandas()
+
+
+    #     id_tuples = self.find_duplicate_hits()
+
+    #     print("Merging BIO-labels")
+    #     processed=0
+    #     for t in id_tuples:
+    #         consolidated = self.df.loc[t[0]]['biolabels']
+    #         for i in t[1:]:
+    #             processed+=1
+    #             tmp_bio = self.df.loc[i]['biolabels']
+    #             for count in range(len(consolidated)):
+    #                 if tmp_bio[count] != 'O':
+    #                     consolidated[count] = tmp_bio[count]
+
+    #         self.df.at[t[0],'biolabels'] = consolidated
+
+    #     print(f"Processed {processed} duplicate rows")
+
+    #     print("Removing now-redundant rows")
+    #     self.df = self.df.drop_duplicates(subset='Hit',keep='first')
+
+    #     # Convert back to Dataset after modification
+    #     self.dataset = Dataset.from_pandas(self.df, preserve_index=False)
+    #     print("Dataset updated after merging and removing duplicates.")
+
     @timeit
     def merge_apc_annotations(self):
         if self.df is None:
             print("No data to merge.")
             return
         else:
-            self.df = self.dataset.to_pandas()
-
+            self.df = self.dataset.to_pandas() # Ensure df is up-to-date with dataset
 
         id_tuples = self.find_duplicate_hits()
 
-        print("Merging BIO-labels")
-        processed=0
+        print("Merging BERT-aligned BIO-labels for duplicates")
+        processed = 0
         for t in id_tuples:
-            consolidated = self.df.loc[t[0]]['biolabels']
-            for i in t[1:]:
-                processed+=1
-                tmp_bio = self.df.loc[i]['biolabels']
-                for count in range(len(consolidated)):
-                    if tmp_bio[count] != 'O':
-                        consolidated[count] = tmp_bio[count]
+            # We now merge 'bert_biolabels'
+            consolidated_labels = list(self.df.loc[t[0]]['bert_biolabels']) # Make a mutable copy
 
-            self.df.at[t[0],'biolabels'] = consolidated
+            for i_idx in t[1:]: # Iterate through subsequent duplicate indices
+                processed += 1
+                tmp_bio = self.df.loc[i_idx]['bert_biolabels']
+
+                # Ensure labels lists have the same length (should be if they are duplicates)
+                if len(consolidated_labels) != len(tmp_bio):
+                    print(f"Warning: Label length mismatch for duplicate rows {t[0]} and {i_idx}. Skipping merge for this pair.")
+                    continue
+
+                for count in range(len(consolidated_labels)):
+                    # If the temporary label is not 'O', it's an APC tag, so use it.
+                    # This ensures 'B-APC' or 'I-APC' overwrites 'O'.
+                    if tmp_bio[count] != 'O':
+                        consolidated_labels[count] = tmp_bio[count]
+
+            # Update the first instance of the duplicate group with the consolidated labels
+            self.df.at[t[0], 'bert_biolabels'] = consolidated_labels
 
         print(f"Processed {processed} duplicate rows")
 
         print("Removing now-redundant rows")
-        self.df = self.df.drop_duplicates(subset='Hit',keep='first')
+        self.df = self.df.drop_duplicates(subset='Hit', keep='first')
 
         # Convert back to Dataset after modification
         self.dataset = Dataset.from_pandas(self.df, preserve_index=False)
         print("Dataset updated after merging and removing duplicates.")
-
     
     ###
     # Experimenting with direct use of datasets
@@ -271,110 +395,159 @@ class APCData:
         self.dataset = Dataset.from_pandas(self.df)
         return self.dataset
 
-    # Add these methods to your APCData class
 
     @timeit
-    def tokenize_dataset(self, tokenizer, num_proc=None, batch_size=1000, 
+    def tokenize_dataset(self, num_proc=None, batch_size=1000,
                         max_length=64, cache_dir=None):
         """
-        General tokenization method that works for both training and inference data
+        General tokenization method that works for both training and inference data.
+        Uses BERT-aligned labels if self.training is True.
         """
-        # If the tokenizer is "fast" (Rust-based), it handles its own parallelism internally.
-        # Using num_proc > 1 with a fast tokenizer can actually *disable* its internal parallelism
-        # and introduce unnecessary multiprocessing overhead.
-        if tokenizer.is_fast:
-            effective_num_proc = None # Let the tokenizer handle parallelism
+        if self.dataset is None:
+            raise ValueError("No dataset available. Load data first.")
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not set. Please provide a tokenizer when initializing APCData or set it before calling this method.")
+        
+        if self.tokenizer.is_fast:
+            effective_num_proc = None
             print("Using a 'fast' tokenizer. Setting num_proc to None for optimal performance.")
         else:
             effective_num_proc = num_proc if num_proc is not None else (min(4, mp.cpu_count() - 1) if mp.cpu_count() > 1 else 1)
             print(f"Processing with {effective_num_proc} processes.")
-        
-        # Create initial dataset if not exists
+
         if self.dataset is None:
             self.create_dataset_from_df()
-        
-        # Define tokenization function that handles both training and inference
+
         def tokenize_function(examples):
-            batch_size = len(examples['tok_Hit'])
-            
-            # Prepare batch data
-            full_tokens_batch = []
+            input_ids_batch = []
+            attention_mask_batch = []
+            token_type_ids_batch = []
+            offset_mapping_batch = []
             labels_batch = []
-            
-            for i in range(batch_size):
-                # Concatenate tokens
-                full_tokens = (examples['tok_ContextBefore'][i] + 
-                            examples['tok_Hit'][i] + 
-                            examples['tok_ContextAfter'][i])
-                full_tokens_batch.append(full_tokens)
-                
-                # Handle labels based on whether this is training data
-                if self.training and 'biolabels' in examples:
-                    # Create labels for training data
-                    len_before = len(examples['tok_ContextBefore'][i])
-                    len_hit = len(examples['tok_Hit'][i])
-                    len_after = len(examples['tok_ContextAfter'][i])
-                    
-                    hit_labels = (examples['biolabels'][i] if 
-                                isinstance(examples['biolabels'][i], list) 
-                                else ["O"] * len_hit)
-                    
-                    labels = ([-100] * len_before + 
-                            hit_labels + 
-                            [-100] * len_after)
-                    labels_batch.append(labels)
-                else:
-                    # For inference data, we don't need real labels
-                    labels_batch.append(None)
-            
-            # Batch tokenization
-            tokenized = tokenizer(
-                full_tokens_batch,
-                is_split_into_words=True,
-                truncation=True,
-                padding="max_length",
-                max_length=max_length,
-                return_tensors=None
-            )
-            
-            # Align labels only for training data
-            if self.training and any(labels is not None for labels in labels_batch):
-                aligned_labels_batch = []
-                for i in range(batch_size):
-                    if labels_batch[i] is not None:
-                        word_ids = tokenized.word_ids(batch_index=i)
-                        aligned_labels = self._align_labels_with_tokens(
-                            word_ids, labels_batch[i]
-                        )
-                        aligned_labels_batch.append(aligned_labels)
-                    else:
-                        # Dummy labels for consistency
-                        aligned_labels_batch.append([-100] * len(tokenized['input_ids'][i]))
-                
-                tokenized["labels"] = aligned_labels_batch
-            
+            hit_token_ranges = []
+            original_text_full_batch = []
+
+            for i in range(len(examples['Hit'])):
+                context_before_text = str(examples['ContextBefore'][i]) if pd.notnull(examples['ContextBefore'][i]) else ""
+                hit_text = str(examples['Hit'][i]) if pd.notnull(examples['Hit'][i]) else ""
+                context_after_text = str(examples['ContextAfter'][i]) if pd.notnull(examples['ContextAfter'][i]) else ""
+
+                full_text = context_before_text + hit_text + context_after_text
+                original_text_full_batch.append(full_text)
+
+                # Tokenize the full string with return_offsets_mapping and return_word_ids
+                # `return_word_ids=True` is useful for mapping to original words, though `offset_mapping`
+                # combined with `hit_char_start/end` is sufficient for this case.
+                full_encoding = self.tokenizer(
+                    full_text,
+                    truncation=True,
+                    padding="max_length",
+                    max_length=max_length,
+                    return_tensors=None,
+                    return_offsets_mapping=True,
+                    return_attention_mask=True,
+                    return_token_type_ids=True,
+                    return_word_ids=True # Useful for debugging or more complex alignment
+                )
+
+                input_ids_batch.append(full_encoding['input_ids'])
+                attention_mask_batch.append(full_encoding['attention_mask'])
+                token_type_ids_batch.append(full_encoding['token_type_ids'])
+                offset_mapping_batch.append(full_encoding['offset_mapping'])
+
+                # Determine the character offsets of 'Hit' within the concatenated full_text
+                cb_len = len(context_before_text)
+                h_len = len(hit_text)
+                hit_char_start = cb_len
+                hit_char_end = cb_len + h_len
+
+                # Find the token indices corresponding to the 'Hit' section
+                hit_start_token_idx = -1
+                hit_end_token_idx = -1
+
+                for token_idx, (char_start, char_end) in enumerate(full_encoding['offset_mapping']):
+                    if char_start is None: # Special tokens like [CLS], [SEP], padding
+                        continue
+                    if max(char_start, hit_char_start) < min(char_end, hit_char_end):
+                        # This token overlaps with the 'Hit' original text span
+                        if hit_start_token_idx == -1:
+                            hit_start_token_idx = token_idx
+                        hit_end_token_idx = token_idx + 1 # Exclusive end
+
+                # If no hit tokens found (e.g., empty hit string), set range to 0,0
+                if hit_start_token_idx == -1:
+                    hit_start_token_idx = 0
+                    hit_end_token_idx = 0
+                hit_token_ranges.append((hit_start_token_idx, hit_end_token_idx))
+
+
+                # Align labels for training data
+                if self.training: # Assume 'bert_biolabels' is now present and BERT-aligned
+                    bert_biolabels_hit = examples['bert_biolabels'][i]
+                    # We need to map `bert_biolabels_hit` (which are for the 'Hit' segment only)
+                    # to the full sequence's tokens.
+                    full_labels = [-100] * len(full_encoding['input_ids'])
+                    current_hit_label_idx = 0
+
+                    for token_idx in range(len(full_encoding['input_ids'])):
+                        if hit_start_token_idx <= token_idx < hit_end_token_idx:
+                            # This token corresponds to the 'Hit' section
+                            if current_hit_label_idx < len(bert_biolabels_hit):
+                                full_labels[token_idx] = self.labeltoint[bert_biolabels_hit[current_hit_label_idx]]
+                                current_hit_label_idx += 1
+                            else:
+                                # This can happen if truncation/padding logic for hit_token_ranges
+                                # leads to more BERT tokens than original bert_biolabels_hit.
+                                # This should be rare if max_length is sufficient and bert_biolabels_hit are correct.
+                                full_labels[token_idx] = -100 # Default to ignore
+                        else:
+                            full_labels[token_idx] = -100 # Tokens outside 'Hit' are ignored for loss
+
+                    labels_batch.append(full_labels)
+                else: # For inference, labels are not needed
+                    labels_batch.append([-100] * len(full_encoding['input_ids']))
+
+            tokenized = {
+                'input_ids': input_ids_batch,
+                'attention_mask': attention_mask_batch,
+                'token_type_ids': token_type_ids_batch,
+                'offset_mapping': offset_mapping_batch,
+                'hit_token_ranges': hit_token_ranges,
+                'original_text_full': original_text_full_batch
+            }
+
+            if self.training:
+                tokenized['labels'] = labels_batch
+
             return tokenized
-        
-        # Determine which columns to remove based on data type
-        columns_to_remove = [col for col in self.dataset.column_names 
-                            if col not in (['instance'] if self.training else [])]
-        
-        # Apply tokenization
-        tokenized_dataset = self.dataset.map(
+
+        columns_to_remove = [col for col in self.dataset.column_names
+                            if col not in (['instance', 'bert_biolabels'] if self.training else [])
+                            and not col.startswith('bert_tok_Hit_')] # Keep the original context/hit/after columns for post-processing
+
+        self.tokenized_dataset = self.dataset.map(
             tokenize_function,
             batched=True,
             batch_size=batch_size,
-            num_proc=num_proc,
-            remove_columns=columns_to_remove,
-            desc="Tokenizing",
-            cache_file_name=f"{cache_dir}/tokenized.arrow" if cache_dir else None
+            num_proc=effective_num_proc,
+            remove_columns=columns_to_remove, # This needs careful adjustment to keep relevant info
+            desc="Tokenizing full sequence and aligning labels",
+            cache_file_name=f"{cache_dir}/tokenized.arrow" if cache_dir else None if cache_dir else None
         )
-        
-        self.tokenized_dataset = tokenized_dataset
-        return tokenized_dataset
+
+        # Restore original text columns if removed for post-processing
+        # The `remove_columns` can be tricky. It's often better to explicitly specify what to *keep*.
+        # For post-processing, you need ContextBefore, Hit, ContextAfter.
+        # Let's ensure these are kept, or accessed from self.dataset.
+        # The `original_text_full` is derived, but the individual fields are still useful.
+
+        return self.tokenized_dataset
+
+
+
 
     @timeit                 
-    def tokenize_and_split_native(self, tokenizer, train_size=0.7, val_to_test_ratio=2/3, 
+    def tokenize_and_split_native(self, train_size=0.7, val_to_test_ratio=2/3, 
                                 random_state=None, num_proc=None, batch_size=1000,
                                 max_length=64, cache_dir=None):
         """
@@ -384,12 +557,12 @@ class APCData:
             raise ValueError("This method is only for training data. Use tokenize_dataset() for inference data.")
         
         # First tokenize the dataset
-        tokenized_dataset = self.tokenize_dataset(
-            tokenizer, num_proc, batch_size, max_length, cache_dir
+        self.tokenize_dataset(
+            self.tokenizer, num_proc, batch_size, max_length, cache_dir
         )
         
         # Convert to pandas temporarily for stratified splitting
-        temp_df = tokenized_dataset.to_pandas()
+        temp_df = self.tokenized_dataset.to_pandas()
         
         # Stratified splits
         train_df, intermed = train_test_split(
@@ -424,7 +597,7 @@ class APCData:
         
         return self.datasets
 
-    def prepare_for_inference(self, tokenizer, max_length=64, num_proc=None, batch_size=1000):
+    def prepare_for_inference(self, max_length=64, num_proc=None, batch_size=1000):
         """
         Convenience method specifically for preparing inference data
         """
@@ -432,11 +605,19 @@ class APCData:
             print("Warning: This appears to be training data. Consider using tokenize_and_split_native() instead.")
         
         return self.tokenize_dataset(
-            tokenizer=tokenizer,
+            tokenizer=self.tokenizer,
             max_length=max_length,
             num_proc=num_proc,
             batch_size=batch_size
         )
+    
+    def prepare_for_inference(self, tokenizer, max_length=64, num_proc=None, cache_dir=None):
+        # Set training to False temporarily for inference prep if it's currently True
+        original_training_status = self.training
+        self.training = False
+        tokenized_data = self.tokenize_dataset(tokenizer, max_length=max_length, num_proc=num_proc, cache_dir=cache_dir)
+        self.training = original_training_status # Restore original status
+        return tokenized_data
 
     
     def get_tokenized_dataset(self):
@@ -478,6 +659,161 @@ class APCData:
         """Return just the test dataset"""
         return self.datasets['test'] if self.datasets else None
     
+    
+    def post_process_predictions(self, predictions, include_personal_pronouns=False):
+        """
+        Reconstructs text and extracts APCs from BERT model predictions.
+        Optionally, also captures personal pronouns that are not part of an APC.
+
+        Args:
+            predictions (np.array or torch.Tensor): The raw logits predictions from the BERT model.
+                                                 Shape: (num_examples, sequence_length, num_labels).
+            tokenizer (transformers.PreTrainedTokenizer): The tokenizer used for encoding the input.
+            include_personal_pronouns (bool): If True, also find and report non-APC personal pronouns.
+
+        Returns:
+            list[dict]: A list of dictionaries, each representing an APC instance
+                        or a non-APC personal pronoun.
+                        Format for APC: {'ContextBefore': str, 'Hit': str, 'ContextAfter': str, 'instance': 1, 'APC': str}
+                        Format for pronoun: {'ContextBefore': str, 'Hit': str, 'ContextAfter': str, 'instance': 0, 'APC': ''}
+        """
+        if not hasattr(self, 'tokenized_dataset'):
+            raise ValueError("Tokenized dataset not found. Please run prepare_for_inference() first.")
+        if self.dataset is None:
+             raise ValueError("Original dataset not found. Cannot retrieve ContextBefore/Hit/ContextAfter.")
+
+        results = []
+
+        predicted_label_ids = torch.argmax(torch.tensor(predictions), axis=2).tolist()
+
+        for i, (original_example, tokenized_example) in enumerate(zip(self.dataset, self.tokenized_dataset)):
+            input_ids = tokenized_example['input_ids']
+            offset_mappings = tokenized_example['offset_mapping']
+            hit_token_start_idx, hit_token_end_idx = tokenized_example['hit_token_ranges']
+            original_full_text = tokenized_example['original_text_full']
+
+            context_before_original = original_example['ContextBefore']
+            hit_original = original_example['Hit']
+            context_after_original = original_example['ContextAfter']
+
+            actual_seq_len = sum(tokenized_example['attention_mask'])
+            predicted_labels = [self.inttolabel[l_id] for l_id in predicted_label_ids[i][:actual_seq_len]]
+
+            apc_spans = [] # Store identified APCs as (start_char, end_char)
+            current_apc_start_char = -1
+            current_apc_end_char = -1
+
+            # --- 1. Extract APCs (Existing Logic) ---
+            for token_idx in range(hit_token_start_idx, hit_token_end_idx):
+                if token_idx >= len(predicted_labels):
+                    break
+
+                label = predicted_labels[token_idx]
+                char_start, char_end = offset_mappings[token_idx]
+
+                if char_start is None or char_end is None or (char_start == 0 and char_end == 0 and token_idx != 0):
+                    continue
+
+                char_start = max(0, char_start)
+                char_end = min(len(original_full_text), char_end)
+
+                if label == 'B-APC':
+                    if current_apc_start_char != -1:
+                        apc_string = original_full_text[current_apc_start_char:current_apc_end_char].strip()
+                        if apc_string:
+                            results.append({
+                                'ContextBefore': context_before_original,
+                                'Hit': hit_original,
+                                'ContextAfter': context_after_original,
+                                'instance': 1,
+                                'APC': apc_string
+                            })
+                            apc_spans.append((current_apc_start_char, current_apc_end_char))
+                    current_apc_start_char = char_start
+                    current_apc_end_char = char_end
+                elif label == 'I-APC':
+                    if current_apc_start_char != -1:
+                        current_apc_end_char = char_end
+                elif label == 'O':
+                    if current_apc_start_char != -1:
+                        apc_string = original_full_text[current_apc_start_char:current_apc_end_char].strip()
+                        if apc_string:
+                            results.append({
+                                'ContextBefore': context_before_original,
+                                'Hit': hit_original,
+                                'ContextAfter': context_after_original,
+                                'instance': 1,
+                                'APC': apc_string
+                            })
+                            apc_spans.append((current_apc_start_char, current_apc_end_char))
+                        current_apc_start_char = -1
+                        current_apc_end_char = -1
+
+            if current_apc_start_char != -1:
+                apc_string = original_full_text[current_apc_start_char:current_apc_end_char].strip()
+                if apc_string:
+                    results.append({
+                        'ContextBefore': context_before_original,
+                        'Hit': hit_original,
+                        'ContextAfter': context_after_original,
+                        'instance': 1,
+                        'APC': apc_string
+                    })
+                    apc_spans.append((current_apc_start_char, current_apc_end_char))
+
+            # --- 2. Capture Non-APC Personal Pronouns (New Logic) ---
+            if include_personal_pronouns:
+                # To avoid duplicate entries for pronouns that are part of an APC
+                # convert `apc_spans` to a set of characters for quick lookup or use overlap check
+                
+                # We need the character offsets of the Hit within the full_text for correct pronoun extraction
+                # (char_start_offset_in_full_text, char_end_offset_in_full_text)
+                cb_len = len(context_before_original)
+                hit_char_start_in_full_text = cb_len
+                hit_char_end_in_full_text = cb_len + len(hit_original)
+
+                # Collect personal pronoun instances, ensuring they are not within an already identified APC
+                for token_idx in range(hit_token_start_idx, hit_token_end_idx):
+                    char_start, char_end = offset_mappings[token_idx]
+
+                    if char_start is None or char_end is None: # Skip special tokens or padding
+                        continue
+
+                    # Adjust char_start/end to be within the original_full_text bounds
+                    char_start = max(0, char_start)
+                    char_end = min(len(original_full_text), char_end)
+
+                    # Extract the token text from the original full text
+                    token_text = original_full_text[char_start:char_end].strip()
+
+                    # Check if it's a personal pronoun (case-insensitive check)
+                    # And ensure it's not empty and not just punctuation/whitespace
+                    if token_text and token_text.lower() in self.german_personal_pronouns:
+                        # Check if this pronoun overlaps with any extracted APC
+                        is_part_of_apc = False
+                        for apc_s, apc_e in apc_spans:
+                            # Check for overlap: [token_char_start, token_char_end) vs [apc_s, apc_e)
+                            if max(char_start, apc_s) < min(char_end, apc_e):
+                                is_part_of_apc = True
+                                break
+
+                        if not is_part_of_apc:
+                            # Add this pronoun as a separate instance
+                            results.append({
+                                'ContextBefore': context_before_original,
+                                'Hit': hit_original,
+                                'ContextAfter': context_after_original,
+                                'instance': 0, # Not an APC
+                                'APC': token_text # The pronoun itself
+                            })
+            # Ensure unique entries for pronouns too, if multiple tokens form a pronoun
+            # For simplicity, we add unique pronoun strings. If you need exact spans,
+            # you'd collect (start_char, end_char) and convert to set.
+            # Here, since it's `instance=0, APC=token_text`, duplicates are less of an issue,
+            # but if the same pronoun appears multiple times in a sentence, it will be added multiple times.
+            # If you want truly unique *pronoun strings per Hit sentence*, you could use a set.
+
+        return results
     
     ######################################
     # DEPRECATED STUFF slated for removal

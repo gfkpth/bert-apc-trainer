@@ -498,7 +498,8 @@ class APCData:
             cache_file_name=f"{cache_dir}/tokenized_chunked.arrow" if cache_dir else None
         )
 
-        print(f"Tokenization complete. Original examples: {len(self.dataset)}, Total chunks: {len(self.tokenized_dataset)}")
+        # This is your existing print
+        print(f"Tokenization complete. Original examples: {len(self.dataset)}, Total chunks: {total_chunks}")
         return self.tokenized_dataset
 
 
@@ -515,10 +516,13 @@ class APCData:
         if not self.training: 
             raise ValueError("This method is only for training data. Use tokenize_dataset() for inference data.") 
         
+        print('Calling tokenization')
         # First tokenize the dataset (creates flat structure)
         self.tokenize_dataset( 
             num_proc=num_proc, batch_size=batch_size, max_length=max_length, overlap=overlap_size, cache_dir=cache_dir 
         ) 
+        
+        print('Finished tokenization')
         
         if 'labels' not in self.tokenized_dataset.column_names: 
             raise ValueError("Labels not found in tokenized dataset. Ensure APCData was initialized with training=True and generate_biolabels_dataset was called.") 

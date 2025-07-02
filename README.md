@@ -9,11 +9,15 @@ Automatic extraction of adnominal pronoun constructions (and other types of adno
 
 
 
-## Base dataset
+## Training dataset
 
 - sentences (+ context sentences left/right) manually annotated for whether they contain an APC (and several other linguistic properties)
-  - German: DWDS Kernkorpus
+  - German: DWDS Kernkorpus (about 44000 rows with potential hits, about 6000 actual instances of APCs)
   - English: BNC
+- many thanks to the annotators involved in different parts of creating the initial training datasets!: 
+  - Andrea Schröter
+  - Maya Galvez Wimmelmann
+  - Carolin Kuna
 - manually annotated datasets cannot be published due to copyright restrictions of the source corpora (or rather the rights provided by the original licensors for the corpus sources)
 
 

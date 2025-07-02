@@ -1,6 +1,8 @@
 
 import pandas as pd
 import numpy as np
+from collections import defaultdict
+
 
 import multiprocessing as mp
 from functools import partial
@@ -324,12 +326,11 @@ class APCData:
             effective_num_proc = num_proc if num_proc is not None else (min(4, mp.cpu_count() - 1) if mp.cpu_count() > 1 else 1)
             print(f"Processing with {effective_num_proc} processes.")
 
-        def tokenize_and_chunk_function(example, idx):
+        def tokenize_and_chunk_function(example, original_example_idx):
             """
             Process a single example and return its chunks.
             This function processes one example at a time to avoid length mismatch issues.
             """
-            original_example_idx = idx
             original_instance = example['instance'] if 'instance' in example else 0
 
             context_before_text = str(example['ContextBefore']) if pd.notnull(example['ContextBefore']) else ""
@@ -339,7 +340,7 @@ class APCData:
             full_text = context_before_text + hit_text + context_after_text
 
             # Skip empty texts
-            if not full_text.strip():
+            if len(full_text.strip()) == 0:
                 return {
                     'input_ids': [],
                     'attention_mask': [],
@@ -365,7 +366,7 @@ class APCData:
             )
 
             # Handle cases where tokenization yields no tokens
-            if not full_encoding['input_ids']:
+            if len(full_encoding['input_ids']) == 0:
                 return {
                     'input_ids': [],
                     'attention_mask': [],
@@ -463,8 +464,7 @@ class APCData:
                 # Move to next chunk with overlap
                 token_start += (max_length - overlap)
 
-            # Return all chunks for this example
-            return {
+            return_dict = {
                 'input_ids': chunks_input_ids,
                 'attention_mask': chunks_attention_mask,
                 'token_type_ids': chunks_token_type_ids,
@@ -476,6 +476,48 @@ class APCData:
                 'original_idx': chunks_original_idx,
                 'original_instance': chunks_original_instance
             }
+
+            # Return all chunks for this example
+            return return_dict
+        
+        # def tokenize_and_chunk_function(examples,indices):
+        #     batch_chunks = {
+        #     'input_ids': [],
+        #     'attention_mask': [],
+        #     'token_type_ids': [],
+        #     'offset_mapping': [],
+        #     'labels': [],
+        #     'hit_token_ranges_in_chunk': [],
+        #     'hit_char_ranges_in_full_text': [],
+        #     'original_text_full': [],
+        #     'original_idx': [],
+        #     'original_instance': []
+        #     }
+
+        #     for i in range(len(examples['ContextBefore'])):
+        #         single_example = {k: examples[k][i] for k in examples}
+        #         index = indices[i]  # This is the *real* index in the original dataset
+        #         chunks = tokenize_and_chunk_single(single_example, original_example_idx=index)
+        #         # chunks is a dict of lists; append all chunk lists to batch_chunks
+        #         for k, v in chunks.items():
+        #             batch_chunks[k].extend(v)
+
+        #     return batch_chunks
+        
+        #     # maybe remove rest of method if working
+        #     results = []
+        #     for i in range(len(examples['ContextBefore'])):
+        #         single_example = {k: examples[k][i] for k in examples}
+        #         index = indices[i]  # This is the *real* index in the original dataset
+        #         chunks = tokenize_and_chunk_single(single_example, original_example_idx=index)
+        #         results.extend(chunks)
+            
+        #     # Convert list of dicts → dict of lists
+        #     collated = defaultdict(list)
+        #     for item in results:
+        #         for k, v in item.items():
+        #             collated[k].append(v)
+        #     return dict(collated)
 
         columns_to_remove = [
             'ContextBefore',
@@ -498,8 +540,6 @@ class APCData:
             cache_file_name=f"{cache_dir}/tokenized_chunked.arrow" if cache_dir else None
         )
 
-        # This is your existing print
-        print(f"Tokenization complete. Original examples: {len(self.dataset)}, Total chunks: {total_chunks}")
         return self.tokenized_dataset
 
 

@@ -27,7 +27,10 @@ train_dataset, val_dataset, test_dataset = dat.tokenize_and_split_native(#cache_
                                                                          random_state=5,
                                                                          max_length=128, 
                                                                          overlap_size=32,
-                                                                         batch_size=1500)  # Get train/val/test splits        # 23s
+                                                                         batch_size=1000)  # Get train/val/test splits        # 23s
+
+# %%
+dat.tokenized_dataset()
 
 
 # %%  old implementations
@@ -73,19 +76,13 @@ tokenizer.save_pretrained(output_model_path) # Always save the tokenizer with th
 print(f"Fine-tuned model and tokenizer saved to: {output_model_path}")
 
 
-# %% load model
-output_model_path = '../models/BERTfull_3epochs'
-
-reloaded_tokenizer = AutoTokenizer.from_pretrained(output_model_path)
-
-reloaded_model = AutoModelForTokenClassification.from_pretrained(output_model_path)
 
 # %%
-reloaded_model.eval()
+tunedmodel.eval()
 
 # Example: If you need to use it with a Trainer for evaluation only
 eval_trainer = Trainer(
-    model=reloaded_model,
+    model=tunedmodel,
     args=training_args, # You might create new args for evaluation or re-use parts
     eval_dataset=test_dataset,
     compute_metrics=compute_metrics
@@ -98,6 +95,14 @@ eval_results
 
 # %% testing
 
+# %% load model
+output_model_path = '../models/BERTfull_3epochs'
+
+tokenizer = AutoTokenizer.from_pretrained(output_model_path)
+
+tunedmodel = AutoModelForTokenClassification.from_pretrained(output_model_path)
+
+
 teststring = """
 Das ist ein interessanter Text, den wir Linguisten sehr mögen. Natürlich könnte ich auch anders gestrickt sein, aber tatsächlich ist er für mich Syntaktiker besonders spannend.
 Leider ist es aber auch nicht so leicht, sich Texte auszudenken. Später können wir das mal automatisch machen, aber wie ich euch Computerlinguisten einschätze, wisst ihr das sicherlich schon.
@@ -106,9 +111,8 @@ Erstmal bleibe ich bei der guten, alten Handarbeit.
 
 # %%
 
-test = APCData(training=False,language='german',strinput=teststring)
-testset = test.prepare_for_inference(tokenizer,cache_dir='tokenization_cache')
-
+test = APCData(training=False,language='german',strinput=teststring,tokenizer=tokenizer)
+testset = test.prepare_for_inference(max_length=128)
 
 # %% Inferencing option 1
 
@@ -130,16 +134,42 @@ inference_args = TrainingArguments(
 )
 
 inference_trainer = Trainer(
-    model=reloaded_model_model,
+    model=tunedmodel,
     args=inference_args,
-    processing_class=reloaded_tokenizer
+    processing_class=tokenizer
     # train_dataset=None, # No training
     # eval_dataset=None,  # No evaluation
     # compute_metrics=None # No metrics computation during predict, if not needed
 )
 
 # Run prediction
-predictions_output = inference_trainer.predict(test_dataset)
+predictions_output = inference_trainer.predict(testset)
+# Debug your predictions_output structure
+print("Type:", type(predictions_output))
+print("Length:", len(predictions_output) if hasattr(predictions_output, '__len__') else 'No length')
+
+if isinstance(predictions_output, list):
+    print("First few shapes:", [np.array(p).shape for p in predictions_output[:5]])
+    print("Sample prediction:", predictions_output[0] if len(predictions_output) > 0 else 'Empty')
+
+#%%
+test.import_predictions(predictions_output)
+
+# %%
+outputtable = test.generate_output_table()
+
+print(outputtable)
+
+# %%
+resultdf = pd.DataFrame(outputtable)
+display(resultdf)
+resultdf.to_csv('test-output.csv')
+
+# %% try extended output
+
+output2df = pd.DataFrame(test.generate_output_table(include_personal_pronouns=True))
+output2df.to_csv('test-output-withpronouns.csv')
+
 
 # predictions_output will be a PredictionOutput object (or namedtuple) with:
 # .predictions: numpy array of raw logits (batch_size, sequence_length, num_labels)
@@ -147,8 +177,8 @@ predictions_output = inference_trainer.predict(test_dataset)
 # .metrics: dictionary of computed metrics if compute_metrics was passed to Trainer
 
 # Example: To get the predicted label IDs:
-predicted_logits = predictions_output.predictions
-predicted_labels = np.argmax(predicted_logits, axis=2)
+# predicted_logits = predictions_output.predictions
+# predicted_labels = np.argmax(predicted_logits, axis=2)
 
 # You'll then need to map these label IDs back to your string labels if you want:
 # e.g., using dat.inttolabel
@@ -163,8 +193,8 @@ from transformers import pipeline
 # You need to pass the model and tokenizer objects directly
 token_classifier = pipeline(
     "token-classification",
-    model=reloaded_model,
-    tokenizer=reloaded_tokenizer,
+    model=tunedmodel,
+    tokenizer=tokenizer,
     # If your 'O' label is 2 and you don't want it in results, specify aggregation_strategy
     # aggregation_strategy="simple" or "first" or "average"
     # Example: To get proper entity spans:

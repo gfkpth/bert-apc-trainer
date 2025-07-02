@@ -43,8 +43,10 @@ class APCData:
         self.language=language              # marks (main) language of dataset
         self.training = training            # markes whether data set is annotated as training data
         self.tokenizer = tokenizer
-        self.dataset = None  # Primary data storage
-        self.df = None       # Keep for backward compatibility or if specific Pandas operations are truly needed
+        self.dataset = None                 # Primary data storage
+        self.df = None                      # Keep for backward compatibility or if specific Pandas operations are truly needed
+        self.tokenized_dataset = None       # Stores the chunked, tokenized data
+        self.aligned_predictions_data = None # Stores the consolidated predictions aligned to original examples
         
         if csvfile:
             print(f'Loading csv file {csvfile} into dataset')
@@ -671,6 +673,424 @@ class APCData:
     def get_test_dataset(self):
         """Return just the test dataset"""
         return self.datasets['test'] if self.datasets else None
+    
+    
+    # @timeit
+    # def import_predictions(self, raw_predictions):
+    #     """
+    #     Aligns raw model predictions (logits) from tokenized chunks back to the
+    #     original full text sequence, consolidating overlapping predictions.
+    #     Stores the consolidated labels internally.
+    #     """
+    #     if not hasattr(self, 'tokenized_dataset') or self.tokenized_dataset is None:
+    #         raise ValueError("Tokenized dataset not found. Please run tokenize_dataset() first.")
+    #     if self.dataset is None:
+    #         raise ValueError("Original dataset not found. Cannot align predictions.")
+
+    #     # Convert predictions to labels (integers)
+    #     predicted_label_ids = np.argmax(raw_predictions, axis=2).tolist()
+
+    #     # Group predictions and offsets by original example ID
+    #     # Key: original_idx, Value: list of (chunk_labels, chunk_offsets, hit_char_range_in_full, original_full_text)
+    #     grouped_chunk_data = {} 
+        
+    #     for i, tokenized_example in enumerate(self.tokenized_dataset):
+    #         original_idx = tokenized_example['original_idx']
+            
+    #         # Get only the active (non-padded) predictions and offsets for this chunk
+    #         actual_seq_len = sum(tokenized_example['attention_mask'])
+    #         chunk_predicted_labels = [self.inttolabel[l_id] for l_id in predicted_label_ids[i][:actual_seq_len]]
+    #         chunk_offsets = tokenized_example['offset_mapping'][:actual_seq_len]
+
+    #         # Store hit_char_range_in_full_text and original_full_text as they are consistent across chunks
+    #         hit_char_range = tuple(tokenized_example['hit_char_ranges_in_full_text']) # Ensure it's a tuple
+    #         original_full_text = tokenized_example['original_text_full']
+
+    #         if original_idx not in grouped_chunk_data:
+    #             grouped_chunk_data[original_idx] = []
+            
+    #         grouped_chunk_data[original_idx].append({
+    #             'labels': chunk_predicted_labels,
+    #             'offsets': chunk_offsets,
+    #             'hit_char_range': hit_char_range,
+    #             'original_full_text': original_full_text
+    #         })
+
+    #     # Process each original example to consolidate labels
+    #     self.aligned_predictions_data = {}
+    #     original_examples_map = {i: example for i, example in enumerate(self.dataset)} # For quick lookup of original contexts
+
+    #     for original_idx, chunks_data in grouped_chunk_data.items():
+    #         # Use the first chunk's full_text and hit_char_range as they are consistent
+    #         full_text_for_original = chunks_data[0]['original_full_text']
+    #         hit_char_start_in_full, hit_char_end_in_full = chunks_data[0]['hit_char_range']
+
+    #         # Create a dictionary to store the "best" label for each token position
+    #         # Use character start position as key to handle overlapping chunks
+    #         consolidated_labels_map = {} # Key: token_start_char_offset, Value: label info
+
+    #         # Iterate through each chunk for this original example
+    #         for chunk_data in chunks_data:
+    #             chunk_labels = chunk_data['labels']
+    #             chunk_offsets = chunk_data['offsets']
+
+    #             for token_idx, (char_start, char_end) in enumerate(chunk_offsets):
+    #                 if token_idx >= len(chunk_labels):  # Safety check
+    #                     break
+                        
+    #                 label = chunk_labels[token_idx]
+                    
+    #                 if char_start is None or char_end is None: # Special tokens/padding
+    #                     continue
+
+    #                 # If this token is an APC label (B-APC or I-APC), it takes precedence
+    #                 # This ensures 'B-APC' or 'I-APC' overwrites 'O' from an overlapping chunk
+    #                 if label != 'O':
+    #                     consolidated_labels_map[char_start] = {
+    #                         'label': label,
+    #                         'char_end': char_end,
+    #                         'token_text': full_text_for_original[char_start:char_end]
+    #                     }
+    #                 elif char_start not in consolidated_labels_map:
+    #                     # Only add 'O' if no other label for this token has been seen yet
+    #                     consolidated_labels_map[char_start] = {
+    #                         'label': label,
+    #                         'char_end': char_end,
+    #                         'token_text': full_text_for_original[char_start:char_end]
+    #                     }
+            
+    #         # Sort tokens by their start character offset to reconstruct original order
+    #         sorted_tokens = sorted(consolidated_labels_map.items())
+
+    #         self.aligned_predictions_data[original_idx] = {
+    #             'original_example_details': original_examples_map[original_idx],
+    #             'full_text': full_text_for_original,
+    #             'hit_char_range_in_full': (hit_char_start_in_full, hit_char_end_in_full),
+    #             'sorted_consolidated_tokens': sorted_tokens # List of (char_start, token_info_dict)
+    #         }
+    #     print("Predictions aligned and consolidated.")
+        
+    @timeit
+    def import_predictions(self, raw_predictions):
+        """
+        Aligns raw model predictions (logits) from tokenized chunks back to the
+        original full text sequence, consolidating overlapping predictions.
+        Stores the consolidated labels internally.
+        """
+        if not hasattr(self, 'tokenized_dataset') or self.tokenized_dataset is None:
+            raise ValueError("Tokenized dataset not found. Please run tokenize_dataset() first.")
+        if self.dataset is None:
+            raise ValueError("Original dataset not found. Cannot align predictions.")
+
+        # Handle different input formats and convert to consistent format
+        try:
+            # Check if this is a PredictionOutput object from transformers
+            if hasattr(raw_predictions, 'predictions'):
+                print("Detected PredictionOutput object, extracting predictions...")
+                raw_predictions = raw_predictions.predictions
+                print(f"Extracted predictions shape: {raw_predictions.shape}")
+            
+            # First, try to understand the structure of raw_predictions
+            if isinstance(raw_predictions, list):
+                # Check if it's a list of arrays with different shapes
+                shapes = [np.array(pred).shape for pred in raw_predictions]
+                print(f"Input shapes: {shapes}")
+                
+                # If shapes are inconsistent, we need to handle this
+                if len(set(shapes)) > 1:
+                    print("Inconsistent shapes detected. Attempting to pad sequences...")
+                    
+                    # Find the maximum sequence length and number of labels
+                    max_seq_len = max(shape[0] if len(shape) >= 1 else 0 for shape in shapes)
+                    num_labels = shapes[0][1] if len(shapes) > 0 and len(shapes[0]) >= 2 else None
+                    
+                    if num_labels is None:
+                        raise ValueError("Cannot determine number of labels from predictions")
+                    
+                    # Pad all predictions to the same length
+                    padded_predictions = []
+                    for pred in raw_predictions:
+                        pred_array = np.array(pred)
+                        if pred_array.ndim == 2:  # (seq_len, num_labels)
+                            current_len = pred_array.shape[0]
+                            if current_len < max_seq_len:
+                                # Pad with zeros (or could use a different padding strategy)
+                                padding = np.zeros((max_seq_len - current_len, num_labels))
+                                pred_array = np.vstack([pred_array, padding])
+                        padded_predictions.append(pred_array)
+                    
+                    raw_predictions = np.stack(padded_predictions)
+                else:
+                    # All shapes are consistent, convert directly
+                    raw_predictions = np.array(raw_predictions)
+            
+            else:
+                # Already a numpy array or similar
+                raw_predictions = np.array(raw_predictions)
+                
+        except Exception as e:
+            print(f"Error processing raw_predictions: {e}")
+            print("Attempting alternative approach...")
+            
+            # Alternative approach: handle the case where we have a PredictionOutput or similar
+            if hasattr(raw_predictions, 'predictions'):
+                raw_predictions = raw_predictions.predictions
+            elif hasattr(raw_predictions, 'logits'):
+                raw_predictions = raw_predictions.logits
+            
+            # Try to convert to numpy array
+            if not isinstance(raw_predictions, np.ndarray):
+                raw_predictions = np.array(raw_predictions)
+            
+            print(f"Successfully converted predictions to array with shape: {raw_predictions.shape}")
+
+        # Ensure we have a 3D array (batch, sequence_length, num_labels)
+        if raw_predictions.ndim == 2:
+            # If it's (sequence_length, num_labels), add a batch dimension
+            raw_predictions = raw_predictions[np.newaxis, :]
+        elif raw_predictions.ndim == 1:
+            # If it's 1D, need to figure out what it represents
+            raise ValueError("Cannot interpret 1D predictions. Expected 2D or 3D array.")
+
+        print(f"Final predictions shape: {raw_predictions.shape}")
+
+        # Convert predictions to labels (integers)
+        predicted_label_ids = np.argmax(raw_predictions, axis=2).tolist()
+
+        # Group predictions and offsets by original example ID
+        # Key: original_idx, Value: list of (chunk_labels, chunk_offsets, hit_char_range_in_full, original_full_text)
+        grouped_chunk_data = {} 
+        
+        for i, tokenized_example in enumerate(self.tokenized_dataset):
+            # Safety check to ensure we don't go out of bounds
+            if i >= len(predicted_label_ids):
+                print(f"Warning: Prediction index {i} exceeds available predictions. Skipping.")
+                continue
+                
+            original_idx = tokenized_example['original_idx']
+            
+            # Get only the active (non-padded) predictions and offsets for this chunk
+            actual_seq_len = sum(tokenized_example['attention_mask'])
+            
+            # Ensure we don't exceed the available predictions
+            available_preds = len(predicted_label_ids[i])
+            actual_seq_len = min(actual_seq_len, available_preds)
+            
+            chunk_predicted_labels = [self.inttolabel[l_id] for l_id in predicted_label_ids[i][:actual_seq_len]]
+            chunk_offsets = tokenized_example['offset_mapping'][:actual_seq_len]
+
+            # Store hit_char_range_in_full_text and original_full_text as they are consistent across chunks
+            hit_char_range = tuple(tokenized_example['hit_char_ranges_in_full_text']) # Ensure it's a tuple
+            original_full_text = tokenized_example['original_text_full']
+
+            if original_idx not in grouped_chunk_data:
+                grouped_chunk_data[original_idx] = []
+            
+            grouped_chunk_data[original_idx].append({
+                'labels': chunk_predicted_labels,
+                'offsets': chunk_offsets,
+                'hit_char_range': hit_char_range,
+                'original_full_text': original_full_text
+            })
+
+        # Process each original example to consolidate labels
+        self.aligned_predictions_data = {}
+        original_examples_map = {i: example for i, example in enumerate(self.dataset)} # For quick lookup of original contexts
+
+        for original_idx, chunks_data in grouped_chunk_data.items():
+            # Use the first chunk's full_text and hit_char_range as they are consistent
+            full_text_for_original = chunks_data[0]['original_full_text']
+            hit_char_start_in_full, hit_char_end_in_full = chunks_data[0]['hit_char_range']
+
+            # Create a dictionary to store the "best" label for each token position
+            # Use character start position as key to handle overlapping chunks
+            consolidated_labels_map = {} # Key: token_start_char_offset, Value: label info
+
+            # Iterate through each chunk for this original example
+            for chunk_data in chunks_data:
+                chunk_labels = chunk_data['labels']
+                chunk_offsets = chunk_data['offsets']
+
+                for token_idx, (char_start, char_end) in enumerate(chunk_offsets):
+                    if token_idx >= len(chunk_labels):  # Safety check
+                        break
+                        
+                    label = chunk_labels[token_idx]
+                    
+                    if char_start is None or char_end is None: # Special tokens/padding
+                        continue
+
+                    # If this token is an APC label (B-APC or I-APC), it takes precedence
+                    # This ensures 'B-APC' or 'I-APC' overwrites 'O' from an overlapping chunk
+                    if label != 'O':
+                        consolidated_labels_map[char_start] = {
+                            'label': label,
+                            'char_end': char_end,
+                            'token_text': full_text_for_original[char_start:char_end]
+                        }
+                    elif char_start not in consolidated_labels_map:
+                        # Only add 'O' if no other label for this token has been seen yet
+                        consolidated_labels_map[char_start] = {
+                            'label': label,
+                            'char_end': char_end,
+                            'token_text': full_text_for_original[char_start:char_end]
+                        }
+            
+            # Sort tokens by their start character offset to reconstruct original order
+            sorted_tokens = sorted(consolidated_labels_map.items())
+
+            self.aligned_predictions_data[original_idx] = {
+                'original_example_details': original_examples_map[original_idx],
+                'full_text': full_text_for_original,
+                'hit_char_range_in_full': (hit_char_start_in_full, hit_char_end_in_full),
+                'sorted_consolidated_tokens': sorted_tokens # List of (char_start, token_info_dict)
+            }
+        print("Predictions aligned and consolidated.")
+
+    def generate_output_table(self, include_personal_pronouns=False):
+        """
+        Generates the final table of APCs and optionally non-APC personal pronouns
+        from the internally stored aligned predictions.
+        
+        Args:
+            include_personal_pronouns (bool): If True, also find and report non-APC personal pronouns.
+
+        Returns:
+            list[dict]: A list of dictionaries, each representing an APC instance
+                        or a non-APC personal pronoun.
+                        Format for APC: {'ContextBefore': str, 'Hit': str, 'ContextAfter': str, 'instance': 1, 'APC': str}
+                        Format for pronoun: {'ContextBefore': str, 'Hit': str, 'ContextAfter': str, 'instance': 0, 'APC': ''}
+        """
+        if self.aligned_predictions_data is None:
+            raise ValueError("Predictions have not been aligned. Run align_predictions_to_original_text() first.")
+
+        final_results = []
+        german_personal_pronouns = {
+            'ich', 'du', 'wir', 'ihr', 'Sie',
+            'mich', 'dich', 'uns', 'euch',
+            'mir', 'dir', 'Ihnen'
+        } # Expanded a bit for common ones
+
+        for original_idx, data in self.aligned_predictions_data.items():
+            original_example = data['original_example_details']
+            context_before_original = str(original_example['ContextBefore']) if pd.notnull(original_example['ContextBefore']) else ""
+            hit_original = str(original_example['Hit']) if pd.notnull(original_example['Hit']) else ""
+            context_after_original = str(original_example['ContextAfter']) if pd.notnull(original_example['ContextAfter']) else ""
+            full_text_for_original = data['full_text']
+            hit_char_start_in_full, hit_char_end_in_full = data['hit_char_range_in_full']
+            sorted_consolidated_tokens = data['sorted_consolidated_tokens']
+
+            apc_spans = [] # Store identified APCs as (start_char, end_char) within full_text_for_original
+            current_apc_start_char = -1
+            current_apc_end_char = -1
+
+            # --- 1. Extract APCs from consolidated labels ---
+            for char_start, token_info in sorted_consolidated_tokens:
+                label = token_info['label']
+                char_end = token_info['char_end']
+
+                # Only process tokens that fall within the original HIT range
+                if not (hit_char_start_in_full <= char_start < hit_char_end_in_full):
+                    # If an APC was open and we moved outside HIT, close it.
+                    if current_apc_start_char != -1:
+                        apc_string = full_text_for_original[current_apc_start_char:current_apc_end_char].strip()
+                        if apc_string:
+                            final_results.append({
+                                'ContextBefore': context_before_original,
+                                'Hit': hit_original,
+                                'ContextAfter': context_after_original,
+                                'instance': 1,
+                                'APC': apc_string
+                            })
+                            apc_spans.append((current_apc_start_char, current_apc_end_char))
+                        current_apc_start_char = -1
+                        current_apc_end_char = -1
+                    continue # Skip tokens outside HIT for APC extraction
+
+                if label == 'B-APC':
+                    if current_apc_start_char != -1: # Previous APC was open, close it
+                        apc_string = full_text_for_original[current_apc_start_char:current_apc_end_char].strip()
+                        if apc_string:
+                            final_results.append({
+                                'ContextBefore': context_before_original,
+                                'Hit': hit_original,
+                                'ContextAfter': context_after_original,
+                                'instance': 1,
+                                'APC': apc_string
+                            })
+                            apc_spans.append((current_apc_start_char, current_apc_end_char))
+                    current_apc_start_char = char_start
+                    current_apc_end_char = char_end
+                elif label == 'I-APC':
+                    if current_apc_start_char != -1: # Continue current APC
+                        current_apc_end_char = char_end
+                    # else: # I-APC without preceding B-APC (isolated I), ignore for extraction
+                elif label == 'O':
+                    if current_apc_start_char != -1: # End of an APC
+                        apc_string = full_text_for_original[current_apc_start_char:current_apc_end_char].strip()
+                        if apc_string:
+                            final_results.append({
+                                'ContextBefore': context_before_original,
+                                'Hit': hit_original,
+                                'ContextAfter': context_after_original,
+                                'instance': 1,
+                                'APC': apc_string
+                            })
+                            apc_spans.append((current_apc_start_char, current_apc_end_char))
+                        current_apc_start_char = -1 # Reset for next APC
+                        current_apc_end_char = -1
+
+            # After iterating all tokens, check if an APC is still open
+            if current_apc_start_char != -1:
+                # Ensure the APC ends within the HIT text
+                if current_apc_end_char > hit_char_end_in_full:
+                    current_apc_end_char = hit_char_end_in_full # Clip if it runs over
+                
+                apc_string = full_text_for_original[current_apc_start_char:current_apc_end_char].strip()
+                if apc_string:
+                    final_results.append({
+                        'ContextBefore': context_before_original,
+                        'Hit': hit_original,
+                        'ContextAfter': context_after_original,
+                        'instance': 1,
+                        'APC': apc_string
+                    })
+                    apc_spans.append((current_apc_start_char, current_apc_end_char))
+
+            # --- 2. Capture Non-APC Personal Pronouns (if requested) ---
+            if include_personal_pronouns:
+                processed_pronoun_spans = set() # To store (start_char, end_char) of pronouns already added
+
+                for char_start, token_info in sorted_consolidated_tokens:
+                    token_text = token_info['token_text']
+                    char_end = token_info['char_end']
+
+                    # Only consider tokens that fall within the original HIT range
+                    if not (hit_char_start_in_full <= char_start < hit_char_end_in_full):
+                        continue
+
+                    # Check if it's a personal pronoun (case-insensitive check)
+                    if token_text and token_text.lower() in german_personal_pronouns:
+                        # Check if this pronoun overlaps with any extracted APC
+                        is_part_of_apc = False
+                        for apc_s, apc_e in apc_spans:
+                            if max(char_start, apc_s) < min(char_end, apc_e):
+                                is_part_of_apc = True
+                                break
+
+                        if (char_start, char_end) in processed_pronoun_spans:
+                            continue
+
+                        if not is_part_of_apc:
+                            final_results.append({
+                                'ContextBefore': context_before_original,
+                                'Hit': hit_original,
+                                'ContextAfter': context_after_original,
+                                'instance': 0, 
+                                'APC': token_text
+                            })
+                            processed_pronoun_spans.add((char_start, char_end))
+        return final_results
     
     
     def post_process_predictions(self, predictions, include_personal_pronouns=False):

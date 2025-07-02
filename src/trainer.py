@@ -23,14 +23,14 @@ dat.merge_apc_annotations()                 # about 0.03s
 
 # %%
 
-train_dataset, val_dataset, test_dataset = dat.tokenize_and_split_native(#cache_dir='./tokenization_cache',
+train_dataset, val_dataset, test_dataset = dat.tokenize_and_split(#cache_dir='./tokenization_cache',
                                                                          random_state=5,
                                                                          max_length=128, 
                                                                          overlap_size=32,
-                                                                         batch_size=1000)  # Get train/val/test splits        # 23s
+                                                                         num_proc=12)  # Get train/val/test splits        # 23s
 
 # %%
-dat.tokenized_dataset()
+dat.tokenized_dataset
 
 
 # %%  old implementations
@@ -69,7 +69,7 @@ trainer.train()
 
 tunedmodel = trainer.model
 
-output_model_path = '../models/BERTfull_3epochs'
+output_model_path = '../models/BERTfixedtrain_3epochs'
 tunedmodel.save_pretrained(output_model_path)
 tokenizer.save_pretrained(output_model_path) # Always save the tokenizer with the model!
 
@@ -96,7 +96,7 @@ eval_results
 # %% testing
 
 # %% load model
-output_model_path = '../models/BERTfull_3epochs'
+output_model_path = '../models/BERTfixedtrain_3epochs'
 
 tokenizer = AutoTokenizer.from_pretrained(output_model_path)
 
@@ -106,7 +106,9 @@ tunedmodel = AutoModelForTokenClassification.from_pretrained(output_model_path)
 teststring = """
 Das ist ein interessanter Text, den wir Linguisten sehr mögen. Natürlich könnte ich auch anders gestrickt sein, aber tatsächlich ist er für mich Syntaktiker besonders spannend.
 Leider ist es aber auch nicht so leicht, sich Texte auszudenken. Später können wir das mal automatisch machen, aber wie ich euch Computerlinguisten einschätze, wisst ihr das sicherlich schon.
-Erstmal bleibe ich bei der guten, alten Handarbeit.
+Erstmal bleibe ich bei der guten, alten Handarbeit. Das kann mir niemand verdenken, auch nicht ihr lachhaften Neider. Ihr langweiligen Spießer der Moderne, da wundert ihr euch, was? 
+Das ist schon ein schwerer Satz, mit dem kann man euch Philister auch etwas quälen. Und du Idiot da in der Ecke brauchst gar nicht zu lachen. 
+Für mich ernsthaften Akademiker sind das sehr ernste Fragen. Eigentlich haben wir Tiere nur im Zoo gesehen. Da wollen die mich Idiot nennen, ich glaub's gar nicht.
 """
 
 # %%
@@ -155,12 +157,10 @@ if isinstance(predictions_output, list):
 #%%
 test.import_predictions(predictions_output)
 
-# %%
 outputtable = test.generate_output_table()
 
 print(outputtable)
 
-# %%
 resultdf = pd.DataFrame(outputtable)
 display(resultdf)
 resultdf.to_csv('test-output.csv')

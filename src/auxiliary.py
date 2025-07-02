@@ -16,6 +16,8 @@ from nltk.tokenize import sent_tokenize
 
 import torch
 from tqdm import tqdm
+from multiprocessing import Pool
+import functools
 
 from datasets import load_dataset, Dataset, DatasetDict
 import evaluate
@@ -50,8 +52,7 @@ class APCData:
         
         if csvfile:
             print(f'Loading csv file {csvfile} into dataset')
-            self.dataset = self.load_csv(csvfile)
-            self.df = self.dataset.to_pandas() # Optionally keep a df for some operations, but minimize
+            self.load_csv(csvfile)
         elif strinput:
             print(f'Loading raw string into dataset')
             self.dataset = self.load_raw_text(strinput)
@@ -82,18 +83,39 @@ class APCData:
     # INPUT METHODS
     
     # loading a csv (assumed to be annotated)
+    # def load_csv(self, path):
+    #     # Directly load into a Hugging Face Dataset
+    #     # If your CSV is large, load_dataset is more efficient than pd.read_csv then from_pandas
+    #     try:
+    #         dataset = load_dataset('csv', data_files=path, split='train')
+    #         # Ensure correct types if necessary, though load_dataset often infers well
+    #         # You might need to cast 'instance' column: dataset = dataset.cast_column('instance', Value('int32'))
+    #         return dataset
+    #     except Exception as e:
+    #         print(f"Error loading CSV directly into Dataset: {e}. Falling back to Pandas.")
+    #         df = pd.read_csv(path, index_col='ID', dtype={'instance': int})
+    #         return Dataset.from_pandas(df, preserve_index=False) # preserve_index=False generally preferred for HF Dataset
+    
     def load_csv(self, path):
-        # Directly load into a Hugging Face Dataset
-        # If your CSV is large, load_dataset is more efficient than pd.read_csv then from_pandas
+        # Load directly into pandas DataFrame first to easily manage the index
+        print(f'Loading data from {path}...')
         try:
-            dataset = load_dataset('csv', data_files=path, split='train')
-            # Ensure correct types if necessary, though load_dataset often infers well
-            # You might need to cast 'instance' column: dataset = dataset.cast_column('instance', Value('int32'))
-            return dataset
+            # Assuming the CSV does not already have an 'original_idx' column
+            df = pd.read_csv(path)
+            # Add a unique 'original_idx' based on the DataFrame's default integer index
+            # This ensures each original row has a persistent ID.
+            df['original_idx'] = df.index
+            self.df = df
+            self.dataset = Dataset.from_pandas(self.df, preserve_index=False) # preserve_index=False if 'original_idx' is already a column
+            print('CSV loaded and original_idx created.')
+        except FileNotFoundError:
+            print(f"Error: CSV file not found at {path}")
+            self.dataset = None
+            self.df = None
         except Exception as e:
-            print(f"Error loading CSV directly into Dataset: {e}. Falling back to Pandas.")
-            df = pd.read_csv(path, index_col='ID', dtype={'instance': int})
-            return Dataset.from_pandas(df, preserve_index=False) # preserve_index=False generally preferred for HF Dataset
+            print(f"Error loading CSV: {e}")
+            self.dataset = None
+            self.df = None
 
     # loading raw data for inferencing
     def load_raw_text(self, text):
@@ -108,11 +130,12 @@ class APCData:
                 hit = sentences[i]
                 context_after = sentences[i + 1] if i < len(sentences) - 1 else ""
                 tmplist.append({
+                    'original_idx': i,
                     'ContextBefore': context_before,
                     'Hit': hit, 
                     'ContextAfter': context_after,
                     'instance': 0,
-                    'APC': ''
+                    'APC': '',
                 })
             # Convert list of dicts directly to Dataset
             return Dataset.from_list(tmplist)
@@ -306,7 +329,7 @@ class APCData:
         return self.dataset
 
 
-    def tokenize_dataset(self, num_proc=None, batch_size=1000,
+    def tokenize_dataset(self, dataset, num_proc=None, batch_size=1000,
                         max_length=512, overlap=64, cache_dir=None):
         """
         Robust tokenization method using a two-step process to avoid PyArrow issues.
@@ -314,27 +337,25 @@ class APCData:
         Step 2: Create new dataset from chunks
         """
         
-        if self.dataset is None:
+        if dataset is None:
             raise ValueError("No dataset available. Load data first.")
         if self.tokenizer is None:
             raise ValueError("Tokenizer not set.")
         
-        print('Adding original_idx separately')
-        self.dataset = self.dataset.map(lambda x, idx: {**x, "original_idx": idx}, with_indices=True)
+        # print('Adding original_idx separately')
+        # dataset = dataset.map(lambda x, idx: {**x, "original_idx": idx}, with_indices=True)
         
         print('Generating all chunks...')
         
         # Step 1: Process all examples and collect chunks in memory
         all_chunks = []
         
-        def process_single_example(example):
-            """Process one example and return its chunks"""
-            return self._create_chunks_for_example(example, max_length, overlap)
+        # def process_single_example(example):
+        #     """Process one example and return its chunks"""
+        #     return self._create_chunks_for_example(example, max_length, overlap)
         
         # Use multiprocessing if available for chunk generation
         if num_proc and num_proc > 1:
-            from multiprocessing import Pool
-            import functools
             
             # Create a partial function with fixed parameters
             process_func = functools.partial(
@@ -348,7 +369,7 @@ class APCData:
             
             print(f"Using {num_proc} processes for chunk generation...")
             with Pool(num_proc) as pool:
-                chunk_lists = pool.map(process_func, self.dataset)
+                chunk_lists = pool.map(process_func, dataset)
                 
             # Flatten the list of lists
             for chunk_list in chunk_lists:
@@ -356,21 +377,20 @@ class APCData:
         else:
             # Single-threaded processing
             print("Processing examples sequentially...")
-            for i, example in enumerate(tqdm(self.dataset, desc="Creating chunks")):
+            for i, example in enumerate(tqdm(dataset, desc="Creating chunks")):
                 chunks = self._create_chunks_for_example(example, max_length, overlap)
                 all_chunks.extend(chunks)
                 
                 if i % 100 == 0 and i > 0:
                     print(f"Processed {i} examples, generated {len(all_chunks)} chunks so far")
         
-        print(f'Generated {len(all_chunks)} total chunks from {len(self.dataset)} examples')
+        print(f'Generated {len(all_chunks)} total chunks from {len(dataset)} examples')
         
         if len(all_chunks) == 0:
             raise ValueError("No chunks were generated. Check your input data.")
         
         # Step 2: Create dataset from chunks
         print('Creating dataset from chunks...')
-        from datasets import Dataset
         
         # Convert to the format expected by Dataset.from_list()
         # Ensure all values are native Python types, not numpy arrays
@@ -386,20 +406,20 @@ class APCData:
                     clean_chunk[key] = value
             clean_chunks.append(clean_chunk)
         
-        self.tokenized_dataset = Dataset.from_list(clean_chunks)
+        tokenized_dataset = Dataset.from_list(clean_chunks)
         
-        print(f"Created tokenized dataset with {len(self.tokenized_dataset)} chunks")
-        print(f"Dataset columns: {self.tokenized_dataset.column_names}")
+        print(f"Created tokenized dataset with {len(tokenized_dataset)} chunks")
+        print(f"Dataset columns: {tokenized_dataset.column_names}")
         
         # Save to cache if requested
         if cache_dir:
             import os
             os.makedirs(cache_dir, exist_ok=True)
             cache_path = os.path.join(cache_dir, "tokenized_chunked.arrow")
-            self.tokenized_dataset.save_to_disk(cache_path)
+            tokenized_dataset.save_to_disk(cache_path)
             print(f"Saved tokenized dataset to {cache_path}")
         
-        return self.tokenized_dataset
+        return tokenized_dataset
 
     def _create_chunks_for_example(self, example, max_length, overlap):
         """Helper method to create chunks for a single example."""
@@ -529,7 +549,7 @@ class APCData:
 
 
     @timeit                 
-    def tokenize_and_split_native(self, test_size=0.1, val_size=0.2, 
+    def tokenize_and_split(self, test_size=0.1, val_size=0.2, 
                                 random_state=None, num_proc=None, batch_size=1000,
                                 max_length=128, overlap_size=64, cache_dir=None):
         """
@@ -539,87 +559,106 @@ class APCData:
         if not self.training: 
             raise ValueError("This method is only for training data. Use tokenize_dataset() for inference data.") 
         
-        print('Calling tokenization')
-        # First tokenize the dataset (creates flat structure)
-        self.tokenize_dataset( 
-            num_proc=num_proc, batch_size=batch_size, max_length=max_length, overlap=overlap_size, cache_dir=cache_dir 
-        ) 
-        
-        print('Finished tokenization')
-        
-        if 'labels' not in self.tokenized_dataset.column_names: 
-            raise ValueError("Labels not found in tokenized dataset. Ensure APCData was initialized with training=True and generate_biolabels_dataset was called.") 
-
-        if 'original_instance' not in self.tokenized_dataset.column_names: 
-            raise ValueError("'original_instance' column not found in tokenized dataset.") 
-        
-        if 'original_idx' not in self.tokenized_dataset.column_names:
-            raise ValueError("'original_idx' column not found in tokenized dataset.") 
 
         # Extract unique original examples for stratified splitting
-        print("Extracting unique original examples for splitting...")
+        print("Converting dataset to DataFrame for stratified splitting...")
         
         # Get unique original examples - much simpler now!
-        unique_examples_df = (
-            self.tokenized_dataset
-            .select_columns(['original_idx', 'original_instance'])
-            .to_pandas()
-            .drop_duplicates(subset=['original_idx'])
-        )
+        unique_examples_df = self.dataset.to_pandas()
         
-        print(f"Found {len(unique_examples_df)} unique original examples")
-        print(f"Instance distribution: {unique_examples_df['original_instance'].value_counts().to_dict()}")
+        print(f"Found {len(unique_examples_df.index)} unique original examples")
+        print(f"Instance distribution: {unique_examples_df['instance'].value_counts().to_dict()}")
         
         # Stratified splits on unique original examples
         train_val_df, test_df = train_test_split( 
             unique_examples_df, 
             test_size=test_size,  
-            stratify=unique_examples_df["original_instance"],
+            stratify=unique_examples_df["instance"],
             random_state=random_state 
         ) 
         
         train_df, val_df = train_test_split( 
             train_val_df, 
             test_size=val_size / (1 - test_size), 
-            stratify=train_val_df["original_instance"],  
+            stratify=train_val_df["instance"],  
             random_state=random_state 
         )         
         
-        # Get sets of original_idx values for each split (O(1) lookup)
-        train_original_indices_set = set(train_df['original_idx'].tolist())
-        val_original_indices_set = set(val_df['original_idx'].tolist())
-        test_original_indices_set = set(test_df['original_idx'].tolist())
+        print(f"Split original examples - Train: {len(train_df.index)}, Val: {len(val_df.index)}, Test: {len(test_df.index)}")
+
+        print("Converting to the splits back to datasets and store in DatasetDict")
         
-        print(f"Split original examples - Train: {len(train_original_indices_set)}, Val: {len(val_original_indices_set)}, Test: {len(test_original_indices_set)}")
-        
-        # Filter chunks based on their original_idx - much simpler now!
-        print("Creating dataset splits...")
-        train_dataset = self.tokenized_dataset.filter(
-            lambda example: example['original_idx'] in train_original_indices_set, 
-            num_proc=num_proc,
-            desc="Creating train dataset"
-        ) 
-        val_dataset = self.tokenized_dataset.filter(
-            lambda example: example['original_idx'] in val_original_indices_set, 
-            num_proc=num_proc,
-            desc="Creating validation dataset"
-        ) 
-        test_dataset = self.tokenized_dataset.filter(
-            lambda example: example['original_idx'] in test_original_indices_set, 
-            num_proc=num_proc,
-            desc="Creating test dataset"
-        ) 
-        
-        print(f"Final chunk counts - Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
-        
-        # Store as DatasetDict for easy access
-        self.datasets = DatasetDict({
+        train_dataset = Dataset.from_pandas(train_df)
+        val_dataset = Dataset.from_pandas(val_df)
+        test_dataset = Dataset.from_pandas(test_df)
+
+        # Combine into a DatasetDict
+        self.dataset = DatasetDict({
             'train': train_dataset,
             'validation': val_dataset,
             'test': test_dataset
         })
         
-        return train_dataset, val_dataset, test_dataset
+        # # Get sets of original_idx values for each split (O(1) lookup)
+        # train_original_indices_set = set(train_df['original_idx'].tolist())
+        # val_original_indices_set = set(val_df['original_idx'].tolist())
+        # test_original_indices_set = set(test_df['original_idx'].tolist())
+        
+        
+        # # Filter chunks based on their original_idx - much simpler now!
+        # print("Creating dataset splits...")
+        # train_dataset = self.tokenized_dataset.filter(
+        #     lambda example: example['original_idx'] in train_original_indices_set, 
+        #     num_proc=num_proc,
+        #     desc="Creating train dataset"
+        # ) 
+        # val_dataset = self.tokenized_dataset.filter(
+        #     lambda example: example['original_idx'] in val_original_indices_set, 
+        #     num_proc=num_proc,
+        #     desc="Creating validation dataset"
+        # ) 
+        # test_dataset = self.tokenized_dataset.filter(
+        #     lambda example: example['original_idx'] in test_original_indices_set, 
+        #     num_proc=num_proc,
+        #     desc="Creating test dataset"
+        # ) 
+        
+        print('Calling tokenization')
+        # First tokenize the dataset (creates flat structure)
+        
+        tokenized_splits = DatasetDict()
+        for split_name, dataset_obj in self.dataset.items():
+            print(f"Tokenizing {split_name} split...")
+            # Call your existing tokenize_dataset logic on the individual dataset_obj
+            # You might need to adjust tokenize_dataset to accept a dataset object as input,
+            # rather than operating on self.dataset directly, if it doesn't already.
+            # For now, let's assume you'd temporarily set self.dataset for the call
+            # or refactor tokenize_dataset to take a dataset_input argument.
+
+            # --- Option 1: If tokenize_dataset is refactored to take an input dataset ---
+            tokenized_splits[split_name] = self.tokenize_dataset(dataset_obj,num_proc=num_proc, 
+                                                                 batch_size=batch_size, 
+                                                                 max_length=max_length, 
+                                                                 overlap=overlap_size, 
+                                                                 cache_dir=cache_dir 
+                                                                 ) 
+
+
+        self.tokenized_dataset = tokenized_splits
+        print('Finished tokenization')
+        
+        # if 'labels' not in self.tokenized_dataset.column_names: 
+        #     raise ValueError("Labels not found in tokenized dataset. Ensure APCData was initialized with training=True and generate_biolabels_dataset was called.") 
+
+        # if 'original_instance' not in self.tokenized_dataset.column_names: 
+        #     raise ValueError("'original_instance' column not found in tokenized dataset.") 
+        
+        # if 'original_idx' not in self.tokenized_dataset.column_names:
+        #     raise ValueError("'original_idx' column not found in tokenized dataset.") 
+        print(f"Final chunk counts - Train: {len(self.tokenized_dataset['train'])}, Val: {len(self.tokenized_dataset['validation'])}, Test: {len(self.tokenized_dataset['test'])}")
+        
+        
+        return self.tokenized_dataset['train'], self.tokenized_dataset['validation'], self.tokenized_dataset['test']
 
     def prepare_for_inference(self, max_length=64, num_proc=None, batch_size=1000):
         """
@@ -628,12 +667,13 @@ class APCData:
         if self.training:
             print("Warning: This appears to be training data. Consider using tokenize_and_split_native() instead.")
         
-        return self.tokenize_dataset(
+        self.tokenized_dataset = self.tokenize_dataset(
+            self.dataset,
             max_length=max_length,
             num_proc=num_proc,
             batch_size=batch_size
         )
-
+        return self.tokenized_dataset
     
     def get_tokenized_dataset(self):
         """

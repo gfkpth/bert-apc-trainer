@@ -15,6 +15,7 @@ nltk.download("punkt")
 from nltk.tokenize import sent_tokenize
 
 import torch
+from tqdm import tqdm
 
 from datasets import load_dataset, Dataset, DatasetDict
 import evaluate
@@ -303,58 +304,131 @@ class APCData:
         return self.dataset
 
 
-    @timeit
     def tokenize_dataset(self, num_proc=None, batch_size=1000,
-                        max_length=512, # Use typical BERT max length
-                        overlap=64,    # Overlap between chunks
-                        cache_dir=None):
+                        max_length=512, overlap=64, cache_dir=None):
         """
-        General tokenization method that works for both training and inference data.
-        Handles long sequences by splitting them into overlapping chunks.
-        Each chunk becomes a separate row in the output dataset.
+        Robust tokenization method using a two-step process to avoid PyArrow issues.
+        Step 1: Generate all chunks as Python objects
+        Step 2: Create new dataset from chunks
         """
-
+        
         if self.dataset is None:
             raise ValueError("No dataset available. Load data first.")
         if self.tokenizer is None:
-            raise ValueError("Tokenizer not set. Please provide a tokenizer when initializing APCData or set it before calling this method.")
+            raise ValueError("Tokenizer not set.")
         
-        if self.tokenizer.is_fast:
-            effective_num_proc = None
-            print("Using a 'fast' tokenizer. Setting num_proc to None for optimal performance.")
+        print('Adding original_idx separately')
+        self.dataset = self.dataset.map(lambda x, idx: {**x, "original_idx": idx}, with_indices=True)
+        
+        print('Generating all chunks...')
+        
+        # Step 1: Process all examples and collect chunks in memory
+        all_chunks = []
+        
+        def process_single_example(example):
+            """Process one example and return its chunks"""
+            return self._create_chunks_for_example(example, max_length, overlap)
+        
+        # Use multiprocessing if available for chunk generation
+        if num_proc and num_proc > 1:
+            from multiprocessing import Pool
+            import functools
+            
+            # Create a partial function with fixed parameters
+            process_func = functools.partial(
+                self._create_chunks_for_example_static,
+                tokenizer=self.tokenizer,
+                training=self.training,
+                labeltoint=getattr(self, 'labeltoint', {}),
+                max_length=max_length,
+                overlap=overlap
+            )
+            
+            print(f"Using {num_proc} processes for chunk generation...")
+            with Pool(num_proc) as pool:
+                chunk_lists = pool.map(process_func, self.dataset)
+                
+            # Flatten the list of lists
+            for chunk_list in chunk_lists:
+                all_chunks.extend(chunk_list)
         else:
-            effective_num_proc = num_proc if num_proc is not None else (min(4, mp.cpu_count() - 1) if mp.cpu_count() > 1 else 1)
-            print(f"Processing with {effective_num_proc} processes.")
+            # Single-threaded processing
+            print("Processing examples sequentially...")
+            for i, example in enumerate(tqdm(self.dataset, desc="Creating chunks")):
+                chunks = self._create_chunks_for_example(example, max_length, overlap)
+                all_chunks.extend(chunks)
+                
+                if i % 100 == 0 and i > 0:
+                    print(f"Processed {i} examples, generated {len(all_chunks)} chunks so far")
+        
+        print(f'Generated {len(all_chunks)} total chunks from {len(self.dataset)} examples')
+        
+        if len(all_chunks) == 0:
+            raise ValueError("No chunks were generated. Check your input data.")
+        
+        # Step 2: Create dataset from chunks
+        print('Creating dataset from chunks...')
+        from datasets import Dataset
+        
+        # Convert to the format expected by Dataset.from_list()
+        # Ensure all values are native Python types, not numpy arrays
+        clean_chunks = []
+        for chunk in all_chunks:
+            clean_chunk = {}
+            for key, value in chunk.items():
+                if isinstance(value, np.ndarray):
+                    clean_chunk[key] = value.tolist()
+                elif isinstance(value, (list, tuple)) and len(value) > 0 and isinstance(value[0], np.ndarray):
+                    clean_chunk[key] = [v.tolist() if isinstance(v, np.ndarray) else v for v in value]
+                else:
+                    clean_chunk[key] = value
+            clean_chunks.append(clean_chunk)
+        
+        self.tokenized_dataset = Dataset.from_list(clean_chunks)
+        
+        print(f"Created tokenized dataset with {len(self.tokenized_dataset)} chunks")
+        print(f"Dataset columns: {self.tokenized_dataset.column_names}")
+        
+        # Save to cache if requested
+        if cache_dir:
+            import os
+            os.makedirs(cache_dir, exist_ok=True)
+            cache_path = os.path.join(cache_dir, "tokenized_chunked.arrow")
+            self.tokenized_dataset.save_to_disk(cache_path)
+            print(f"Saved tokenized dataset to {cache_path}")
+        
+        return self.tokenized_dataset
 
-        def tokenize_and_chunk_function(example, original_example_idx):
-            """
-            Process a single example and return its chunks.
-            This function processes one example at a time to avoid length mismatch issues.
-            """
-            original_instance = example['instance'] if 'instance' in example else 0
+    def _create_chunks_for_example(self, example, max_length, overlap):
+        """Helper method to create chunks for a single example."""
+        return self._create_chunks_for_example_static(
+            example, self.tokenizer, self.training, 
+            getattr(self, 'labeltoint', {}), max_length, overlap
+        )
 
-            context_before_text = str(example['ContextBefore']) if pd.notnull(example['ContextBefore']) else ""
-            hit_text = str(example['Hit']) if pd.notnull(example['Hit']) else ""
-            context_after_text = str(example['ContextAfter']) if pd.notnull(example['ContextAfter']) else ""
-
-            full_text = context_before_text + hit_text + context_after_text
-
-            # Skip empty texts
-            if len(full_text.strip()) == 0:
-                return {
-                    'input_ids': [],
-                    'attention_mask': [],
-                    'token_type_ids': [],
-                    'offset_mapping': [],
-                    'labels': [],
-                    'hit_token_ranges_in_chunk': [],
-                    'hit_char_ranges_in_full_text': [],
-                    'original_text_full': [],
-                    'original_idx': [],
-                    'original_instance': []
-                }
-
-            full_encoding = self.tokenizer(
+    @staticmethod
+    def _create_chunks_for_example_static(example, tokenizer, training, labeltoint, max_length, overlap):
+        """
+        Static method for creating chunks - can be used with multiprocessing.
+        Returns a list of chunk dictionaries with scalar values.
+        """
+        import pandas as pd
+        
+        original_example_idx = example['original_idx']
+        original_instance = example.get('instance', 0)
+        
+        context_before_text = str(example['ContextBefore']) if pd.notnull(example['ContextBefore']) else ""
+        hit_text = str(example['Hit']) if pd.notnull(example['Hit']) else ""
+        context_after_text = str(example['ContextAfter']) if pd.notnull(example['ContextAfter']) else ""
+        
+        full_text = context_before_text + hit_text + context_after_text
+        
+        # Skip empty texts
+        if len(full_text.strip()) == 0:
+            return []
+        
+        try:
+            full_encoding = tokenizer(
                 full_text,
                 truncation=False,
                 padding=False,
@@ -364,184 +438,91 @@ class APCData:
                 return_token_type_ids=False,
                 add_special_tokens=True
             )
-
-            # Handle cases where tokenization yields no tokens
-            if len(full_encoding['input_ids']) == 0:
-                return {
-                    'input_ids': [],
-                    'attention_mask': [],
-                    'token_type_ids': [],
-                    'offset_mapping': [],
-                    'labels': [],
-                    'hit_token_ranges_in_chunk': [],
-                    'hit_char_ranges_in_full_text': [],
-                    'original_text_full': [],
-                    'original_idx': [],
-                    'original_instance': []
-                }
-
-            # Calculate character ranges for hit text in full text
-            cb_len = len(context_before_text)
-            h_len = len(hit_text)
-            hit_char_start_in_full = cb_len
-            hit_char_end_in_full = cb_len + h_len
-
-            # Prepare labels for the full sequence if training
-            full_sequence_labels = None
-            if self.training and 'bert_biolabels' in example:
-                bert_biolabels_hit = example['bert_biolabels']
-                full_sequence_labels = [-100] * len(full_encoding['input_ids'])
-                hit_labels_idx = 0
-                
-                for t_idx, (c_start, c_end) in enumerate(full_encoding['offset_mapping']):
-                    if c_start is None or c_end is None:
-                        continue
-                    # Check if token overlaps with hit text
-                    if max(c_start, hit_char_start_in_full) < min(c_end, hit_char_end_in_full):
-                        if hit_labels_idx < len(bert_biolabels_hit):
-                            full_sequence_labels[t_idx] = self.labeltoint[bert_biolabels_hit[hit_labels_idx]]
-                            hit_labels_idx += 1
-
-            # Lists to collect all chunks for this example
-            chunks_input_ids = []
-            chunks_attention_mask = []
-            chunks_token_type_ids = []
-            chunks_offset_mapping = []
-            chunks_labels = []
-            chunks_hit_token_ranges = []
-            chunks_hit_char_ranges = []
-            chunks_original_text_full = []
-            chunks_original_idx = []
-            chunks_original_instance = []
-
-            # Create chunks from this example
-            token_start = 0
-            while token_start < len(full_encoding['input_ids']):
-                token_end = min(token_start + max_length, len(full_encoding['input_ids']))
-                
-                # Extract chunk
-                chunk_ids = full_encoding['input_ids'][token_start:token_end]
-                chunk_offsets = full_encoding['offset_mapping'][token_start:token_end]
-                
-                # Pad to max_length
-                padding_length = max_length - len(chunk_ids)
-                padded_input_ids = chunk_ids + [self.tokenizer.pad_token_id] * padding_length
-                attention_mask = [1] * len(chunk_ids) + [0] * padding_length
-                token_type_ids = [0] * max_length
-                padded_offset_mapping = chunk_offsets + [(0, 0)] * padding_length
-                
-                # Handle labels for this chunk
-                if self.training and full_sequence_labels is not None:
-                    chunk_labels = full_sequence_labels[token_start:token_end]
-                    chunk_labels = chunk_labels + [-100] * padding_length
-                else:
-                    chunk_labels = [-100] * max_length
-                
-                # Find hit token range in this chunk (for potential future use)
-                hit_start_token_idx_in_chunk = 0
-                hit_end_token_idx_in_chunk = 0
-                
-                for j, (c_start, c_end) in enumerate(chunk_offsets):
-                    if c_start is None or c_end is None:
-                        continue
-                    if max(c_start, hit_char_start_in_full) < min(c_end, hit_char_end_in_full):
-                        if hit_start_token_idx_in_chunk == 0:
-                            hit_start_token_idx_in_chunk = j
-                        hit_end_token_idx_in_chunk = j + 1
-                
-                # Append this chunk to the lists
-                chunks_input_ids.append(padded_input_ids)
-                chunks_attention_mask.append(attention_mask)
-                chunks_token_type_ids.append(token_type_ids)
-                chunks_offset_mapping.append(padded_offset_mapping)
-                chunks_labels.append(chunk_labels)
-                chunks_hit_token_ranges.append((hit_start_token_idx_in_chunk, hit_end_token_idx_in_chunk))
-                chunks_hit_char_ranges.append((hit_char_start_in_full, hit_char_end_in_full))
-                chunks_original_text_full.append(full_text)
-                chunks_original_idx.append(original_example_idx)
-                chunks_original_instance.append(original_instance)
-                
-                # Move to next chunk with overlap
-                token_start += (max_length - overlap)
-
-            return_dict = {
-                'input_ids': chunks_input_ids,
-                'attention_mask': chunks_attention_mask,
-                'token_type_ids': chunks_token_type_ids,
-                'offset_mapping': chunks_offset_mapping,
-                'labels': chunks_labels,
-                'hit_token_ranges_in_chunk': chunks_hit_token_ranges,
-                'hit_char_ranges_in_full_text': chunks_hit_char_ranges,
-                'original_text_full': chunks_original_text_full,
-                'original_idx': chunks_original_idx,
-                'original_instance': chunks_original_instance
-            }
-
-            # Return all chunks for this example
-            return return_dict
+        except Exception as e:
+            print(f"Tokenization failed for example {original_example_idx}: {e}")
+            return []
         
-        # def tokenize_and_chunk_function(examples,indices):
-        #     batch_chunks = {
-        #     'input_ids': [],
-        #     'attention_mask': [],
-        #     'token_type_ids': [],
-        #     'offset_mapping': [],
-        #     'labels': [],
-        #     'hit_token_ranges_in_chunk': [],
-        #     'hit_char_ranges_in_full_text': [],
-        #     'original_text_full': [],
-        #     'original_idx': [],
-        #     'original_instance': []
-        #     }
-
-        #     for i in range(len(examples['ContextBefore'])):
-        #         single_example = {k: examples[k][i] for k in examples}
-        #         index = indices[i]  # This is the *real* index in the original dataset
-        #         chunks = tokenize_and_chunk_single(single_example, original_example_idx=index)
-        #         # chunks is a dict of lists; append all chunk lists to batch_chunks
-        #         for k, v in chunks.items():
-        #             batch_chunks[k].extend(v)
-
-        #     return batch_chunks
+        if len(full_encoding['input_ids']) == 0:
+            return []
         
-        #     # maybe remove rest of method if working
-        #     results = []
-        #     for i in range(len(examples['ContextBefore'])):
-        #         single_example = {k: examples[k][i] for k in examples}
-        #         index = indices[i]  # This is the *real* index in the original dataset
-        #         chunks = tokenize_and_chunk_single(single_example, original_example_idx=index)
-        #         results.extend(chunks)
+        # Calculate character ranges
+        cb_len = len(context_before_text)
+        h_len = len(hit_text)
+        hit_char_start_in_full = cb_len
+        hit_char_end_in_full = cb_len + h_len
+        
+        # Prepare labels if training
+        full_sequence_labels = None
+        if training and 'bert_biolabels' in example:
+            bert_biolabels_hit = example['bert_biolabels']
+            full_sequence_labels = [-100] * len(full_encoding['input_ids'])
+            hit_labels_idx = 0
             
-        #     # Convert list of dicts → dict of lists
-        #     collated = defaultdict(list)
-        #     for item in results:
-        #         for k, v in item.items():
-        #             collated[k].append(v)
-        #     return dict(collated)
-
-        columns_to_remove = [
-            'ContextBefore',
-            'Hit',
-            'ContextAfter',
-            'APC',
-            'bert_tok_Hit_input_ids',
-            'bert_tok_Hit_attention_mask',
-            'bert_tok_Hit_offsets'
-        ]
-
-        # Process one example at a time (batched=False) to avoid length mismatch issues
-        self.tokenized_dataset = self.dataset.map(
-            tokenize_and_chunk_function,
-            batched=False,  # Process one example at a time
-            with_indices=True,
-            num_proc=effective_num_proc,
-            remove_columns=columns_to_remove,
-            desc="Tokenizing and chunking sequences",
-            cache_file_name=f"{cache_dir}/tokenized_chunked.arrow" if cache_dir else None
-        )
-
-        return self.tokenized_dataset
-
+            for t_idx, (c_start, c_end) in enumerate(full_encoding['offset_mapping']):
+                if c_start is None or c_end is None:
+                    continue
+                if max(c_start, hit_char_start_in_full) < min(c_end, hit_char_end_in_full):
+                    if hit_labels_idx < len(bert_biolabels_hit):
+                        full_sequence_labels[t_idx] = labeltoint[bert_biolabels_hit[hit_labels_idx]]
+                        hit_labels_idx += 1
+        
+        # Create chunks
+        chunks = []
+        token_start = 0
+        
+        while token_start < len(full_encoding['input_ids']):
+            token_end = min(token_start + max_length, len(full_encoding['input_ids']))
+            
+            # Extract chunk
+            chunk_ids = full_encoding['input_ids'][token_start:token_end]
+            chunk_offsets = full_encoding['offset_mapping'][token_start:token_end]
+            
+            # Pad to max_length
+            padding_length = max_length - len(chunk_ids)
+            padded_input_ids = chunk_ids + [tokenizer.pad_token_id] * padding_length
+            attention_mask = [1] * len(chunk_ids) + [0] * padding_length
+            token_type_ids = [0] * max_length
+            padded_offset_mapping = chunk_offsets + [(0, 0)] * padding_length
+            
+            # Handle labels for this chunk
+            if training and full_sequence_labels is not None:
+                chunk_labels = full_sequence_labels[token_start:token_end]
+                chunk_labels = chunk_labels + [-100] * padding_length
+            else:
+                chunk_labels = [-100] * max_length
+            
+            # Find hit token range in this chunk
+            hit_start_token_idx_in_chunk = 0
+            hit_end_token_idx_in_chunk = 0
+            
+            for j, (c_start, c_end) in enumerate(chunk_offsets):
+                if c_start is None or c_end is None:
+                    continue
+                if max(c_start, hit_char_start_in_full) < min(c_end, hit_char_end_in_full):
+                    if hit_start_token_idx_in_chunk == 0:
+                        hit_start_token_idx_in_chunk = j
+                    hit_end_token_idx_in_chunk = j + 1
+            
+            # Create chunk dictionary - CRITICAL: all values must be native Python types
+            chunk_dict = {
+                'input_ids': padded_input_ids,  # Python list
+                'attention_mask': attention_mask,  # Python list
+                'token_type_ids': token_type_ids,  # Python list
+                'offset_mapping': padded_offset_mapping,  # Python list of tuples
+                'labels': chunk_labels,  # Python list
+                'hit_token_ranges_in_chunk': (hit_start_token_idx_in_chunk, hit_end_token_idx_in_chunk),  # Python tuple
+                'hit_char_ranges_in_full_text': (hit_char_start_in_full, hit_char_end_in_full),  # Python tuple
+                'original_text_full': full_text,  # Python string
+                'original_idx': int(original_example_idx),  # Python int (not numpy)
+                'original_instance': int(original_instance)  # Python int (not numpy)
+            }
+            
+            chunks.append(chunk_dict)
+            
+            # Move to next chunk with overlap
+            token_start += (max_length - overlap)
+        
+        return chunks
 
 
 

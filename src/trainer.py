@@ -171,6 +171,17 @@ output2df = pd.DataFrame(test.generate_output_table(include_personal_pronouns=Tr
 output2df.to_csv('test-output-withpronouns.csv')
 
 
+# %%
+
+test5 = APCData(training=False,language='german',strinput='Eure Probleme finden wir Hausmeister interessant.',tokenizer=tokenizer)
+testset = test5.prepare_for_inference(max_length=128)
+
+test5.import_predictions(inference_trainer.predict(testset))
+output2df = pd.DataFrame(test5.generate_output_table(include_personal_pronouns=True))
+output2df.to_csv('test5-output-withpronouns.csv')
+
+
+
 # predictions_output will be a PredictionOutput object (or namedtuple) with:
 # .predictions: numpy array of raw logits (batch_size, sequence_length, num_labels)
 # .label_ids: numpy array of true labels (batch_size, sequence_length) - will be None if not provided in dataset

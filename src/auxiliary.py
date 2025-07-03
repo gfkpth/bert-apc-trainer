@@ -342,17 +342,11 @@ class APCData:
         if self.tokenizer is None:
             raise ValueError("Tokenizer not set.")
         
-        # print('Adding original_idx separately')
-        # dataset = dataset.map(lambda x, idx: {**x, "original_idx": idx}, with_indices=True)
         
         print('Generating all chunks...')
         
         # Step 1: Process all examples and collect chunks in memory
         all_chunks = []
-        
-        # def process_single_example(example):
-        #     """Process one example and return its chunks"""
-        #     return self._create_chunks_for_example(example, max_length, overlap)
         
         # Use multiprocessing if available for chunk generation
         if num_proc and num_proc > 1:
@@ -599,30 +593,6 @@ class APCData:
             'test': test_dataset
         })
         
-        # # Get sets of original_idx values for each split (O(1) lookup)
-        # train_original_indices_set = set(train_df['original_idx'].tolist())
-        # val_original_indices_set = set(val_df['original_idx'].tolist())
-        # test_original_indices_set = set(test_df['original_idx'].tolist())
-        
-        
-        # # Filter chunks based on their original_idx - much simpler now!
-        # print("Creating dataset splits...")
-        # train_dataset = self.tokenized_dataset.filter(
-        #     lambda example: example['original_idx'] in train_original_indices_set, 
-        #     num_proc=num_proc,
-        #     desc="Creating train dataset"
-        # ) 
-        # val_dataset = self.tokenized_dataset.filter(
-        #     lambda example: example['original_idx'] in val_original_indices_set, 
-        #     num_proc=num_proc,
-        #     desc="Creating validation dataset"
-        # ) 
-        # test_dataset = self.tokenized_dataset.filter(
-        #     lambda example: example['original_idx'] in test_original_indices_set, 
-        #     num_proc=num_proc,
-        #     desc="Creating test dataset"
-        # ) 
-        
         print('Calling tokenization')
         # First tokenize the dataset (creates flat structure)
         
@@ -647,14 +617,6 @@ class APCData:
         self.tokenized_dataset = tokenized_splits
         print('Finished tokenization')
         
-        # if 'labels' not in self.tokenized_dataset.column_names: 
-        #     raise ValueError("Labels not found in tokenized dataset. Ensure APCData was initialized with training=True and generate_biolabels_dataset was called.") 
-
-        # if 'original_instance' not in self.tokenized_dataset.column_names: 
-        #     raise ValueError("'original_instance' column not found in tokenized dataset.") 
-        
-        # if 'original_idx' not in self.tokenized_dataset.column_names:
-        #     raise ValueError("'original_idx' column not found in tokenized dataset.") 
         print(f"Final chunk counts - Train: {len(self.tokenized_dataset['train'])}, Val: {len(self.tokenized_dataset['validation'])}, Test: {len(self.tokenized_dataset['test'])}")
         
         
@@ -715,101 +677,6 @@ class APCData:
         return self.datasets['test'] if self.datasets else None
     
     
-    # @timeit
-    # def import_predictions(self, raw_predictions):
-    #     """
-    #     Aligns raw model predictions (logits) from tokenized chunks back to the
-    #     original full text sequence, consolidating overlapping predictions.
-    #     Stores the consolidated labels internally.
-    #     """
-    #     if not hasattr(self, 'tokenized_dataset') or self.tokenized_dataset is None:
-    #         raise ValueError("Tokenized dataset not found. Please run tokenize_dataset() first.")
-    #     if self.dataset is None:
-    #         raise ValueError("Original dataset not found. Cannot align predictions.")
-
-    #     # Convert predictions to labels (integers)
-    #     predicted_label_ids = np.argmax(raw_predictions, axis=2).tolist()
-
-    #     # Group predictions and offsets by original example ID
-    #     # Key: original_idx, Value: list of (chunk_labels, chunk_offsets, hit_char_range_in_full, original_full_text)
-    #     grouped_chunk_data = {} 
-        
-    #     for i, tokenized_example in enumerate(self.tokenized_dataset):
-    #         original_idx = tokenized_example['original_idx']
-            
-    #         # Get only the active (non-padded) predictions and offsets for this chunk
-    #         actual_seq_len = sum(tokenized_example['attention_mask'])
-    #         chunk_predicted_labels = [self.inttolabel[l_id] for l_id in predicted_label_ids[i][:actual_seq_len]]
-    #         chunk_offsets = tokenized_example['offset_mapping'][:actual_seq_len]
-
-    #         # Store hit_char_range_in_full_text and original_full_text as they are consistent across chunks
-    #         hit_char_range = tuple(tokenized_example['hit_char_ranges_in_full_text']) # Ensure it's a tuple
-    #         original_full_text = tokenized_example['original_text_full']
-
-    #         if original_idx not in grouped_chunk_data:
-    #             grouped_chunk_data[original_idx] = []
-            
-    #         grouped_chunk_data[original_idx].append({
-    #             'labels': chunk_predicted_labels,
-    #             'offsets': chunk_offsets,
-    #             'hit_char_range': hit_char_range,
-    #             'original_full_text': original_full_text
-    #         })
-
-    #     # Process each original example to consolidate labels
-    #     self.aligned_predictions_data = {}
-    #     original_examples_map = {i: example for i, example in enumerate(self.dataset)} # For quick lookup of original contexts
-
-    #     for original_idx, chunks_data in grouped_chunk_data.items():
-    #         # Use the first chunk's full_text and hit_char_range as they are consistent
-    #         full_text_for_original = chunks_data[0]['original_full_text']
-    #         hit_char_start_in_full, hit_char_end_in_full = chunks_data[0]['hit_char_range']
-
-    #         # Create a dictionary to store the "best" label for each token position
-    #         # Use character start position as key to handle overlapping chunks
-    #         consolidated_labels_map = {} # Key: token_start_char_offset, Value: label info
-
-    #         # Iterate through each chunk for this original example
-    #         for chunk_data in chunks_data:
-    #             chunk_labels = chunk_data['labels']
-    #             chunk_offsets = chunk_data['offsets']
-
-    #             for token_idx, (char_start, char_end) in enumerate(chunk_offsets):
-    #                 if token_idx >= len(chunk_labels):  # Safety check
-    #                     break
-                        
-    #                 label = chunk_labels[token_idx]
-                    
-    #                 if char_start is None or char_end is None: # Special tokens/padding
-    #                     continue
-
-    #                 # If this token is an APC label (B-APC or I-APC), it takes precedence
-    #                 # This ensures 'B-APC' or 'I-APC' overwrites 'O' from an overlapping chunk
-    #                 if label != 'O':
-    #                     consolidated_labels_map[char_start] = {
-    #                         'label': label,
-    #                         'char_end': char_end,
-    #                         'token_text': full_text_for_original[char_start:char_end]
-    #                     }
-    #                 elif char_start not in consolidated_labels_map:
-    #                     # Only add 'O' if no other label for this token has been seen yet
-    #                     consolidated_labels_map[char_start] = {
-    #                         'label': label,
-    #                         'char_end': char_end,
-    #                         'token_text': full_text_for_original[char_start:char_end]
-    #                     }
-            
-    #         # Sort tokens by their start character offset to reconstruct original order
-    #         sorted_tokens = sorted(consolidated_labels_map.items())
-
-    #         self.aligned_predictions_data[original_idx] = {
-    #             'original_example_details': original_examples_map[original_idx],
-    #             'full_text': full_text_for_original,
-    #             'hit_char_range_in_full': (hit_char_start_in_full, hit_char_end_in_full),
-    #             'sorted_consolidated_tokens': sorted_tokens # List of (char_start, token_info_dict)
-    #         }
-    #     print("Predictions aligned and consolidated.")
-        
     @timeit
     def import_predictions(self, raw_predictions):
         """
@@ -1403,52 +1270,6 @@ def compute_metrics(eval_preds):
 
     
 
-# # to check for utility and inclusion into 
-# def predict_labels(model, tokenizer, context_before, hit, context_after, label_map):
-#     model.eval()
-
-#     # Tokenize manually split input
-#     tokens = word_tokenize(context_before) + word_tokenize(hit) + word_tokenize(context_after)
-
-#     # Tokenize with BERT tokenizer
-#     tokenized = tokenizer(
-#         tokens,
-#         is_split_into_words=True,
-#         return_tensors="pt",
-#         truncation=True,
-#         padding="max_length",
-#         max_length=64,
-#     )
-
-#     with torch.no_grad():
-#         output = model(**tokenized)
-
-#     # Get predicted label IDs
-#     predictions = torch.argmax(output.logits, dim=-1).squeeze().tolist()
-#     word_ids = tokenized.word_ids()
-
-#     # Align word-level labels
-#     aligned_labels = []
-#     last_word_id = None
-#     for i, word_id in enumerate(word_ids):
-#         if word_id is None or word_id == last_word_id:
-#             aligned_labels.append(None)
-#         else:
-#             aligned_labels.append(predictions[i])
-#             last_word_id = word_id
-
-#     # Only return tokens + predictions for the Hit section
-#     hit_start = len(word_tokenize(context_before))
-#     hit_end = hit_start + len(word_tokenize(hit))
-
-#     # Map back to readable labels
-#     readable_labels = [
-#         (tokens[i], label_map[aligned_labels[i]]) 
-#         for i in range(len(tokens)) 
-#         if aligned_labels[i] is not None and hit_start <= i < hit_end
-#     ]
-
-#     return readable_labels
 
 
 

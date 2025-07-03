@@ -16,6 +16,31 @@
 - initial training results from 2025-06-30: promising accuracy around 99.6% (both on validation and test)
   - this was on previous implementation with word-tokenisation, but not proper output processing to make results usable again
 
+
+## Possible future extensions
+
+- do manual check on newly generated dataset(s) to make it/them gold standard (rather optional, only after bootcamp)
+- extend to English
+- create basic interface with streamlit
+- extended (linguistically informed) EDA on base data
+- applying unsupervised learning to base data
+- consider expanding to yet other languages with different structures (e.g. Spanish or Greek with definite articles "nosotros los lingüistas") - unlikely due to limited availability of annotated data
+- output data could also be saved in SQL db (or in linguistically-oriented formats like CLDF?)
+- include a re-training functionality to allow easier refinement of the dataset with more/new data
+- compare to performance of LLM with targeted prompt(s) on test-set
+- publicly available or local; for volume reasons local would be preferable, but time-limitations might preclude this
+
+
+## Challenges
+
+- re-formatting existing data to identify relevant APCs within training sentences (bracketing?) before training
+- set up NLP pipeline to identify potential APCs (pronoun + noun with possible intervening material) and pre-annotate raw text into appropriate list of candidates (intermediate pos-tagging? structural parsing? latter presumably error prone)
+- getting the initial NLP pipeline to work and pre-filter raw text data the way I need it
+- find additional datasets for annotation (Project Gutenberg?)
+
+
+
+
 # Work packages for initial bringup
 
 ## WP1: Data preparation

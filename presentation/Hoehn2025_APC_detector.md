@@ -376,7 +376,9 @@ csquotes: true
 
 ## 
 
-\centering\LARGE Thanks for your attention and a pleasant and productive 9 weeks!
+\centering\LARGE Thanks for your attention 
+
+\Large and a pleasant and productive 9 weeks!
 
 
 ## References {.allowframebreaks}

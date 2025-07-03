@@ -249,7 +249,7 @@ csquotes: true
 
 
 
-## Approach {.allowframebreaks}
+## Approach 
 
 - using huggingface's `Trainer` with pre-trained base model: [`bert-base-german-cased`](https://huggingface.co/google-bert/bert-base-german-cased)
 
@@ -268,7 +268,7 @@ csquotes: true
 \endgl
 \xe
 
-### Training data structure
+## Training data structure
 
 - reduced version of annotated dataset
 - retaining 
@@ -346,12 +346,22 @@ csquotes: true
 - transformers offer a promising avenue for relatively reliable identification of APCs
 - trade-off: large-ish model size at 415 MB
 
+### Notes
+
+- beware of interactions of batched tokenisation and chunking of long datarows
+  - batching does *not* work if rows are added due to chunking
+
+
+##
+
+
 ### Further evaluation
 
 - create systematic test set of difficult data types
 - comparing up- and downwards
   - export test set as csv, compare performance of LLMs
   - build smaller models and compare performance
+
 
 ## Some extensions
 

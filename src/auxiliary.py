@@ -1269,6 +1269,18 @@ def compute_metrics(eval_preds):
     return results
 
     
+def string_in_apc_df_out(string, trainer, tokenizer, language='german' , inclprons=True, num_proc=4):
+    # load string into APCData object
+    dat = APCData(training=False,language=language,strinput=string,tokenizer=tokenizer)
+    # prepare input to inference model
+    # note that num_proc=None currently leads to single-threaded execution
+    dataset = dat.prepare_for_inference(max_length=128,num_proc=num_proc)
+    # run inference and import back into data object
+    dat.import_predictions(trainer.predict(dataset))
+    # return post-processed structured output as DataFrame
+    return pd.DataFrame(dat.generate_output_table(include_personal_pronouns=inclprons))
+    
+    
 
 
 

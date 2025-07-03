@@ -15,8 +15,8 @@ Due to the space restrictions on GitHub, I cannot upload the trained model here.
 For running the streamlit demo app (ensure that you have loaded an appropriate python environment):
 
 ```shell
-pip install -r requirements.txt
 cd src
+pip install -r requirements.txt
 streamlit run streamlit-ui.py 
 ```
 

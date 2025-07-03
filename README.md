@@ -12,9 +12,10 @@ The resulting model has a size of about 415 MB and achieves 99.7% accuracy on in
 
 Due to the space restrictions on GitHub, I cannot upload the trained model here. So for now this will only work if you get the model directly from me. I will update when I find time make the model available alternatively. 
 
-For running the streamlit demo app:
+For running the streamlit demo app (ensure that you have loaded an appropriate python environment):
 
 ```shell
+pip install -r requirements.txt
 cd src
 streamlit run streamlit-ui.py 
 ```

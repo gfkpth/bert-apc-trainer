@@ -23,12 +23,12 @@ streamlit run streamlit-ui.py
 Using the convenience function `string_in_apc_df_out` in `auxiliary.py` in python:
 
 ```python
-def string_in_apc_df_out(string, trainer, tokenizer, language='german' , inclprons=True, num_proc=4):
+def string_in_apc_df_out(string, trainer, tokenizer, language='german', inclprons=True, num_proc=4):
 ```
 
 Arguments: 
 string
-:   the input string (can be a complete file, currently this is automatically sentence-tokenized and split into context triplets)
+:   the input string (can be a complete file, currently this is automatically sentence-tokenised and split into context triplets)
 
 trainer
 :   a huggingface `Trainer` object
@@ -41,6 +41,9 @@ language
 
 inclprons
 :   bool indicating whether the returned dataframe should have separate rows for all personal pronouns (currently hard-coded) in addition to instances identified as APCs
+
+num_proc
+:   integer indicating the number of parallel processes (applies to tokenisation)
 
 
 Here is a minimal working example for its use:

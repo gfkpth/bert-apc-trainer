@@ -349,7 +349,7 @@ csquotes: true
 ### Notes
 
 - beware of interactions of batched tokenisation and chunking of long datarows
-  - batching does *not* work if rows are added due to chunking
+  - batching of huggingface Dataset.map() does *not* work if rows are added during batch processing due to chunking
 
 
 ##

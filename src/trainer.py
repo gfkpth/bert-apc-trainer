@@ -93,15 +93,21 @@ eval_results = eval_trainer.evaluate()
 
 eval_results
 
+
+#########################################
+# CORE PART OF trainer.py ends here
+# below is a testing ground
+
 # %% testing
 
 # %% load model
-output_model_path = '../models/BERTfixedtrain_3epochs'
+output_model_path = '../models/BERTfull_GER-APC'
 
 tokenizer = AutoTokenizer.from_pretrained(output_model_path)
 
 tunedmodel = AutoModelForTokenClassification.from_pretrained(output_model_path)
 
+#%%
 
 teststring = """
 Das ist ein interessanter Text, den wir Linguisten sehr mögen. Natürlich könnte ich auch anders gestrickt sein, aber tatsächlich ist er für mich Syntaktiker besonders spannend.
@@ -144,6 +150,8 @@ inference_trainer = Trainer(
     # compute_metrics=None # No metrics computation during predict, if not needed
 )
 
+# %%
+
 # Run prediction
 predictions_output = inference_trainer.predict(testset)
 # Debug your predictions_output structure
@@ -180,7 +188,10 @@ test5.import_predictions(inference_trainer.predict(testset))
 output2df = pd.DataFrame(test5.generate_output_table(include_personal_pronouns=True))
 output2df.to_csv('test5-output-withpronouns.csv')
 
+# %% Testing 
 
+df = string_in_apc_df_out('Wir Linguisten lachen gerne. Dagegen seid ihr Clowns die reinsten Griesgrame.', inference_trainer, tokenizer, language='german', inclprons=True, num_proc=6)
+display(df)
 
 # predictions_output will be a PredictionOutput object (or namedtuple) with:
 # .predictions: numpy array of raw logits (batch_size, sequence_length, num_labels)

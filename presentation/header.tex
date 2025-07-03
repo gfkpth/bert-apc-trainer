@@ -1,0 +1,107 @@
+\usepackage{etex}	% avoid memory errors
+
+\newenvironment{dummy}{}{}	% for saving LaTeX environments
+
+% crossing out stuff, Option für normale Darstellung der \emph{} tags (sonst unterstrichen)
+\usepackage[normalem]{ulem}
+
+\usepackage{tipa}
+\usepackage{leipzig}
+\usepackage{expex}
+
+\lingset{glhangstyle=none, everygla= , everyglb=\small, aboveglbskip=-0.6ex, aboveglftskip=-1ex, aboveexskip=0ex, belowexskip=0ex, extraglskip=-.2ex, labeloffset=3pt, textoffset=8pt, numoffset=0pt, interpartskip=-0.5ex, belowglpreambleskip=-2ex}
+
+
+\resetcountonoverlays{excnt}		% avoid upcounting example numbers on overlay slides
+
+
+%%%%%%%%%%%%%%%%%%%%%%%
+%%% TikZ-related stuff 
+%%%%%%%%%%%%%%%%%%%%%%%
+
+\usepackage{tikz}
+\usetikzlibrary{arrows,arrows.meta,shapes.misc,shadows,shapes.multipart,positioning,decorations.markings}
+%\usepackage{qtree}
+\usepackage{tikz-qtree}
+\usepackage{tikz-qtree-compat}
+\tikzset{every tree node/.style={align=center, anchor=north}}	% allows multiple lines in tree node (as side effect, cf. handbook)
+
+\usepackage{tikz-Nodeconnect}
+
+
+% at some point to implement: (optional) argument positioning of label (north, south)
+% first argument label of main node
+% second argument text of main node
+% third argument tag
+\newcommand{\inlineLabel}[3]{%
+    \begin{tikzpicture}[baseline=(#1.base), txt/.style={shape=rectangle, inner sep=0pt}, remember picture]% the baseline key ensures that nodes won't shift up if there's text with descenders, and the txt style removes extra spacing so you can use this inline
+    \node[txt] (#1) {#2};% the third argument is the contents of the main node
+    \node[above] at (#1.north) {\footnotesize{#3}};% the second argument is the tag; you can play with the positioning as necessary
+    \end{tikzpicture}%
+    }
+    
+
+\newcommand{\anchornode}[2]{%
+    \begin{tikzpicture}[baseline=(#1.base), txt/.style={shape=rectangle, inner sep=0pt}, remember picture]% the baseline key ensures that nodes won't shift up if there's text with descenders, and the txt style removes extra spacing so you can use this inline
+    \node[txt] (#1) {#2};% the third argument is the contents of the main node
+%   \node[above] at (#1.north) {\footnotesize{#3}};% the second argument is the tag; you can play with the positioning as necessary
+    \end{tikzpicture}%
+    }
+
+
+%strike through arrow
+\newcommand*{\StrikeThruDistance}{0.17cm}%
+\newcommand*{\StrikeThru}{\StrikeThruDistance,\StrikeThruDistance}%
+
+
+\tikzset{strike thru arrow/.style={
+    decoration={markings, mark=at position 0.5 with {
+        \draw [red, thick,-] 
+            ++ (-\StrikeThruDistance,-\StrikeThruDistance) 
+            -- ( \StrikeThruDistance, \StrikeThruDistance);
+	\draw [red, thick,-] 
+            ++ (-\StrikeThruDistance, \StrikeThruDistance) 
+            -- ( \StrikeThruDistance, -\StrikeThruDistance);}
+    },
+    postaction={decorate},
+}}
+
+% end TikZ
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newcommand{\unt}[1]{\hbox{}$_\text{#1}$}
+
+\usepackage{xcolor}
+
+\definecolor{light-gray}{gray}{.9}
+\definecolor{mid-gray}{gray}{.8}
+\definecolor{dark-gray}{gray}{.5}
+
+%%%%%%%%%%%%%%%%%%
+%% LAYOUT
+%%%%%%%%%%%%%%%%%%%%%%
+
+
+% test 
+\definecolor{darkgreen}{RGB}{0,100,0}
+\definecolor{lightergreen}{RGB}{34,134,34}
+\definecolor{lightgreen}{RGB}{151, 237, 166}
+\definecolor{alertgreen}{RGB}{11,168,37}
+
+%\setbeamercolor{title separator}{fg=darkgreen , bg=lightgreen}
+%\setbeamercolor{progress bar in section page}{fg=darkgreen , bg=lightgreen}
+%\setbeamercolor{alerted text}{fg=alertgreen}
+
+\usepackage[autostyle]{csquotes}	% for properly typeset quotes
+
+% allow linebreaks in code listings
+\usepackage{listings}
+\lstset{
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  basicstyle=\ttfamily\footnotesize,
+  frame=single
+}

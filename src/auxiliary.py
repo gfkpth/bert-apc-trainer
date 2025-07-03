@@ -1,7 +1,7 @@
 
 import pandas as pd
 import numpy as np
-from collections import defaultdict
+#from collections import defaultdict
 
 
 import multiprocessing as mp
@@ -9,9 +9,8 @@ from functools import partial
 #from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 import time
 
-import nltk
-
-nltk.download("punkt")
+#import nltk
+#nltk.download("punkt")
 from nltk.tokenize import sent_tokenize
 
 import torch
@@ -22,7 +21,7 @@ import functools
 from datasets import load_dataset, Dataset, DatasetDict
 import evaluate
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
+#from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 
 

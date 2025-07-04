@@ -252,3 +252,85 @@ results_2 = token_classifier([example_text_1, example_text_2]) # Process multipl
 # model.config.id2label = {v: k for k, v in dat.labeltoint.items()}
 # model.config.label2id = dat.labeltoint
 # Then save the model.
+
+
+###########################
+# train English model on BNC-data
+
+# %%
+
+modelname= "bert-base-uncased"
+tokenizer = BertTokenizerFast.from_pretrained(modelname)
+model = BertForTokenClassification.from_pretrained(modelname, num_labels=3)  # if using BIO
+
+#%% load and prepare data
+dat = aux.APCData(training=True, csvfile='../data/copyright/BNC_combined_we_you_redux.csv',tokenizer=tokenizer,language='english')
+dat.generate_biolabels_dataset()                 # about 7s with dataframes, about 4s(?) with datasets, far less with caching
+dat.merge_apc_annotations()                 # about 0.03s
+
+# %%
+
+train_dataset, val_dataset, test_dataset = dat.tokenize_and_split(#cache_dir='./tokenization_cache',
+                                                                         random_state=5,
+                                                                         max_length=128, 
+                                                                         overlap_size=32,
+                                                                         num_proc=12)  # Get train/val/test splits        # 23s
+
+
+
+# %%
+from transformers import TrainingArguments, Trainer
+
+training_args = TrainingArguments(
+    output_dir="./results-tmp",
+    weight_decay=0.01,
+    learning_rate=2e-5,
+    per_device_train_batch_size=16,
+    per_device_eval_batch_size=16,
+    num_train_epochs=3,
+    eval_strategy="epoch",
+    save_strategy="epoch",
+    load_best_model_at_end=True,
+    overwrite_output_dir=True
+)
+
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=train_dataset,
+    eval_dataset=val_dataset,
+    processing_class=tokenizer,
+    compute_metrics=compute_metrics
+)
+
+# %%
+trainer.train()
+
+
+# %%
+
+tunedmodel = trainer.model
+
+output_model_path = '../models/BERT-EN-3epochs'
+tunedmodel.save_pretrained(output_model_path)
+tokenizer.save_pretrained(output_model_path) # Always save the tokenizer with the model!
+
+print(f"Fine-tuned model and tokenizer saved to: {output_model_path}")
+
+
+
+# %%
+tunedmodel.eval()
+
+# Example: If you need to use it with a Trainer for evaluation only
+eval_trainer = Trainer(
+    model=tunedmodel,
+    args=training_args, # You might create new args for evaluation or re-use parts
+    eval_dataset=test_dataset,
+    compute_metrics=compute_metrics
+)
+eval_results = eval_trainer.evaluate()
+
+# %%
+
+eval_results

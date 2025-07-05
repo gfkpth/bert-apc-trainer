@@ -4,9 +4,15 @@ This project documents the creation of a deep-learning model for detecting adnom
 
 Automatic extraction of adnominal pronoun constructions (and other types of adnominal person marking) is very difficult because even prompting based on part-of-speech in appropriately tagged corpora yields many false positives. Recall improves for treebanks (like [Universal Dependencies](https://universaldependencies.org/)), but those are typically much smaller in size (and currently lack a universal annotation standard for adnominal person marking, cf. [Hoehn 2021](https://aclanthology.org/2021.udw-1.6/)).
 
-I trained the transformer model [`bert-base-german-cased`](https://huggingface.co/google-bert/bert-base-german-cased) for token classification on a manually annotated dataset of sentences containing adnominal pronoun constructions. The token-level labels are automatically generated on the basis of raw data available in the dataset. 
+# Models
+
+I trained the transformer model [`bert-base-german-cased`](https://huggingface.co/google-bert/bert-base-german-cased) for token classification on a manually annotated dataset of sentences containing adnominal pronoun constructions extracted from the Kernkorpus of [DWDS](https://www.dwds.de/). The token-level labels are automatically generated on the basis of raw data available in the dataset. 
 
 The resulting model has a size of about 415 MB and achieves 99.7% accuracy on initial evaluation.
+
+Similarly, I trained the English ['bert-base-uncased]() model on a similarly annotated dataset extracted from the Britihs National Corpus.
+
+Both models are can be accessed for inferencing with a basic convenience function that takes a (potentially very long) string and returns a dataframe listing all discovered APCs (and optionally also pronouns) and their corresponding sentences, as well as their  left and right context. Moreover, a simple streamlit app was created for demo purposes. 
 
 # Usage
 

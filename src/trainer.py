@@ -334,3 +334,36 @@ eval_results = eval_trainer.evaluate()
 # %%
 
 eval_results
+
+
+
+# %%
+
+output_model_path = '../models/BERT-EN-3epochs'
+tokenizer = AutoTokenizer.from_pretrained(output_model_path)
+tunedmodel = AutoModelForTokenClassification.from_pretrained(output_model_path)
+
+
+inference_args = TrainingArguments(
+    output_dir="./inference_results", # Required, but won't save much for predict
+    per_device_eval_batch_size=16,
+    do_train=False,
+    do_eval=False,
+    do_predict=True,
+    # Consider fp16=True if your model supports it for faster inference on GPU
+    # no_cuda_empty_cache=True, # Often helpful
+)
+
+inference_trainer = Trainer(
+    model=tunedmodel,
+    args=inference_args,
+    processing_class=tokenizer
+    # train_dataset=None, # No training
+    # eval_dataset=None,  # No evaluation
+    # compute_metrics=None # No metrics computation during predict, if not needed
+)
+
+#%%
+
+df = string_in_apc_df_out('I told you linguists are a clever bunch.', inference_trainer, tokenizer, language='english', inclprons=True, num_proc=6)
+display(df)

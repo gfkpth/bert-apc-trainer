@@ -81,7 +81,11 @@ display(df)
 - [src/](src/): contains the source code
   - [EDA.ipynb](src/EDA.ipynb): some basic EDA on the original data (due to copyright restrictions the original training data cannot be shared)
   - [auxiliary.py](src/auxiliary.py): contains some helper functions and the APCData class, which 
-  - [trainer.py](src/trainer.py): the code for training the 
+  - [trainer.py](src/trainer.py): code for training and basic evaluation of the models, basic testing of the functionality of convenience function for model I/O using the `APCData` class 
+  - [streamlit-ui.py](src/streamlit-ui.py): code for the streamlit demo application
+- [data/](data/): contains two test files for the streamlit application (training data or test output can also be expected here)
+- [presentation](presentation/): a presentation of the project at the Ironhack Data Science bootcamp
+- [assets](assets/): assets for the presentation
 
 
 ## Training dataset

@@ -8,8 +8,6 @@ from io import StringIO
 # custom imports
 import auxiliary as aux
 
-model_path_GER = '../models/BERTfull_GER-APC'
-
 #
 # local helper functions
 #
@@ -22,8 +20,10 @@ def load_model(model_path):
     return tokenizer, model
 
 # create and cache trainer
+# create and cache trainer - KEY FIX: Include model_path as a parameter for cache key
 @st.cache_resource
-def setup_trainer(_model, _tokenizer):
+def setup_trainer(model_path):
+    tokenizer, model = load_model(model_path)
     inference_args = TrainingArguments(
         output_dir="./inference_results", # Required, but won't save much for predict
         per_device_eval_batch_size=16,
@@ -34,14 +34,16 @@ def setup_trainer(_model, _tokenizer):
         # no_cuda_empty_cache=True, # Often helpful
     )
 
-    return Trainer(
-        model=_model,
+    trainer = Trainer(
+        model=model,
         args=inference_args,
-        processing_class=_tokenizer
+        processing_class=tokenizer
         # train_dataset=None, # No training
         # eval_dataset=None,  # No evaluation
         # compute_metrics=None # No metrics computation during predict, if not needed
     )
+    
+    return trainer, tokenizer
 
 # run inference and cache output dataframe
 def get_data(string, _trainer, _tokenizer, language='german', inclprons=True, num_proc=4):
@@ -55,19 +57,36 @@ def convert_for_download(df):
 def reset():
     st.session_state.preinference = True
     st.session_state.df_full = pd.DataFrame()
-
+    if 'model_choice' not in st.session_state:
+        st.session_state.model_choice = "german"
+        
 #
 # Setting up tools
 # 
-
-# setting up tokenizer, model and inferencer
-tokenizer, model = load_model(model_path_GER)
-inferencer = setup_trainer(model, tokenizer)
 
 # Initialize session state
 if 'preinference' not in st.session_state:
     reset()
     
+
+# setting up tokenizer, model and inferencer
+models = [
+    {"label": "german", 
+     "language": "german",
+     "display": "German (BERTfull_GER-APC)", 
+     "path": "../models/BERTfull_GER-APC"},
+    {"label": "english",
+     "language": "english", 
+     "display": "English (BERT-EN-3epochs)", 
+     "path": "../models/BERT-EN-3epochs"}
+]
+
+# Load the selected model based on dropdown
+# selected_model_path = model_paths[st.session_state.model_choice]
+# tokenizer, model = load_model(selected_model_path)
+# inferencer = setup_trainer(model, tokenizer)
+
+
 #
 # Setting up page
 #
@@ -78,14 +97,25 @@ st.set_page_config(page_title="APC detector", layout="wide")
 # Content and functionality
 #
 
-
 # Main window - Define input_string FIRST
 st.title('Welcome to the APC detector')
 
 st.markdown("""'What is an APC' you might ask? The term is used here as shorthand for **adnominal pronoun construction** as in English *you academics* or *we/us geniuses*. 
-         The current version of the detector only supports German APCs like *wir Linguisten*. An extension to English might follow at a later point.""")
+         The current version of the detector supports detection of APCs in English and in German (*wir Linguisten*).""")
 
 # Get input choice from sidebar first
+#st.session_state.model_choice = st.sidebar.selectbox("Choose model language", options=["German", "English"]).lower()
+#st.session_state.model_choice = st.sidebar.selectbox("Choose model language", options=["german", "english"], index=0 if st.session_state.get('model_choice', 'german') == 'german' else 1)
+# Just use the key parameter and let Streamlit handle state
+selected_model = st.sidebar.selectbox(
+    "Choose model language",
+    options=models,
+    format_func=lambda x: x["display"],  # Show the display name
+    key="model_selector"
+)
+
+st.session_state.model_choice = selected_model["label"]  # Use the short label
+
 inputchoice = st.sidebar.radio('How would you like to submit your input',
                        options=['Free text', 'Upload text file'], 
                        captions=['Enter your text in the text field', 'Select a text file for analysis'])
@@ -127,8 +157,12 @@ with st.sidebar:
             try:
                 with st.spinner('Processing input...'):
                     st.session_state.preinference = False
+                    
+                    # KEY FIX: Load model and trainer based on current selection
+                    inferencer, tokenizer = setup_trainer(selected_model["path"])
+                    
                     # Reduce num_proc for Streamlit environment
-                    returndf = get_data(input_string, inferencer, tokenizer, language='german', inclprons=output_includes_pronouns, num_proc=1)
+                    returndf = get_data(input_string, inferencer, tokenizer, language=selected_model["language"], inclprons=output_includes_pronouns, num_proc=1)
                     if returndf.empty:
                         st.toast('No relevant constructions found')
                     else:

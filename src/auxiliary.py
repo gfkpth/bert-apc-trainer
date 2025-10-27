@@ -1070,7 +1070,7 @@ def get_sample_sents(csv,size_ratio,proportionate=True):
     if proportionate:
         if type(size_ratio) == float: 
             print(f'Creating proportionate sample with a relative size of {size_ratio} of the original dataset')
-            sample = df.groupby('Grade', group_keys=False).apply(lambda x: x.sample(frac=size_ratio))
+            sample = df.groupby('instance', group_keys=False).apply(lambda x: x.sample(frac=size_ratio))
         elif type(size_ratio) == int:
             print(f'Creating proportionate sample with an absolute size of {size_ratio}')
             group_counts = df['instance'].value_counts(normalize=True)
@@ -1086,7 +1086,7 @@ def get_sample_sents(csv,size_ratio,proportionate=True):
     else:
         if type(size_ratio) == int:
             print(f'Creating disproportionate sample with an absolute size of {size_ratio}')
-            sample = df.groupby('Grade', group_keys=False).apply(lambda x: x.sample(total_size/2))
+            sample = df.groupby('instance', group_keys=False).apply(lambda x: x.sample(total_size/2))
         else:
             print('Error: size_ratio needs to be an integer indicating the desired sample size when generating a disproportionate sample')
             return None

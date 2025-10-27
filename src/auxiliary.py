@@ -61,8 +61,6 @@ class APCData:
             self.dataset = Dataset.from_dict({'ContextBefore': [], 'Hit': [], 'ContextAfter': [], 'instance': [], 'APC': []})
             self.df = pd.DataFrame(columns=['ContextBefore', 'Hit', 'ContextAfter', 'instance', 'APC'])
 
-            
-
         
         # setting up mappings
         self.labeltoint = {
@@ -518,18 +516,18 @@ class APCData:
                         hit_start_token_idx_in_chunk = j
                     hit_end_token_idx_in_chunk = j + 1
             
-            # Create chunk dictionary - CRITICAL: all values must be native Python types
+            # Create chunk dictionary - CRITICAL for debugging: all values must be native Python types
             chunk_dict = {
-                'input_ids': padded_input_ids,  # Python list
-                'attention_mask': attention_mask,  # Python list
-                'token_type_ids': token_type_ids,  # Python list
-                'offset_mapping': padded_offset_mapping,  # Python list of tuples
-                'labels': chunk_labels,  # Python list
+                'input_ids': padded_input_ids,                  # Python list
+                'attention_mask': attention_mask,               # Python list
+                'token_type_ids': token_type_ids,               # Python list
+                'offset_mapping': padded_offset_mapping,        # Python list of tuples
+                'labels': chunk_labels,                         # Python list
                 'hit_token_ranges_in_chunk': (hit_start_token_idx_in_chunk, hit_end_token_idx_in_chunk),  # Python tuple
                 'hit_char_ranges_in_full_text': (hit_char_start_in_full, hit_char_end_in_full),  # Python tuple
-                'original_text_full': full_text,  # Python string
-                'original_idx': int(original_example_idx),  # Python int (not numpy)
-                'original_instance': int(original_instance)  # Python int (not numpy)
+                'original_text_full': full_text,                # Python string
+                'original_idx': int(original_example_idx),      # Python int (not numpy)
+                'original_instance': int(original_instance)     # Python int (not numpy)
             }
             
             chunks.append(chunk_dict)
@@ -579,7 +577,7 @@ class APCData:
         
         print(f"Split original examples - Train: {len(train_df.index)}, Val: {len(val_df.index)}, Test: {len(test_df.index)}")
 
-        print("Converting to the splits back to datasets and store in DatasetDict")
+        print("Converting the splits back to datasets and store in DatasetDict")
         
         train_dataset = Dataset.from_pandas(train_df)
         val_dataset = Dataset.from_pandas(val_df)
@@ -598,13 +596,7 @@ class APCData:
         tokenized_splits = DatasetDict()
         for split_name, dataset_obj in self.dataset.items():
             print(f"Tokenizing {split_name} split...")
-            # Call your existing tokenize_dataset logic on the individual dataset_obj
-            # You might need to adjust tokenize_dataset to accept a dataset object as input,
-            # rather than operating on self.dataset directly, if it doesn't already.
-            # For now, let's assume you'd temporarily set self.dataset for the call
-            # or refactor tokenize_dataset to take a dataset_input argument.
-
-            # --- Option 1: If tokenize_dataset is refactored to take an input dataset ---
+            # Call tokenize_dataset() on the individual dataset_obj
             tokenized_splits[split_name] = self.tokenize_dataset(dataset_obj,num_proc=num_proc, 
                                                                  batch_size=batch_size, 
                                                                  max_length=max_length, 
@@ -613,7 +605,13 @@ class APCData:
                                                                  ) 
 
 
+        # save tokenised dataset in object
         self.tokenized_dataset = tokenized_splits
+        # save untokenised dataframes for later reference
+        self.train_df = train_df
+        self.val_df = val_df
+        self.test_df = test_df
+        
         print('Finished tokenization')
         
         print(f"Final chunk counts - Train: {len(self.tokenized_dataset['train'])}, Val: {len(self.tokenized_dataset['validation'])}, Test: {len(self.tokenized_dataset['test'])}")
@@ -853,9 +851,9 @@ class APCData:
             }
         print("Predictions aligned and consolidated.")
 
-    def generate_output_table(self, include_personal_pronouns=False):
+    def generate_output_table(self, tabular=True,include_personal_pronouns=False):
         """
-        Generates the final table of APCs and optionally non-APC personal pronouns
+        Generates the output APCs and optionally non-APC personal pronouns
         from the internally stored aligned predictions.
         
         Args:
@@ -868,7 +866,7 @@ class APCData:
                         Format for pronoun: {'ContextBefore': str, 'Hit': str, 'ContextAfter': str, 'instance': 0, 'APC': ''}
         """
         if self.aligned_predictions_data is None:
-            raise ValueError("Predictions have not been aligned. Run align_predictions_to_original_text() first.")
+            raise ValueError("Predictions have not been aligned. Run import_predictions() first.")
 
         final_results = []
         german_personal_pronouns = {
@@ -1056,5 +1054,42 @@ def string_in_apc_df_out(string, trainer, tokenizer, language='german' , inclpro
     
 
 
+def get_sample_sents(csv,size_ratio,proportionate=True):
+    """Returns a list of sample sentences from a structured csv
+    
+    args:
+    
+        *csv*: filepath to csv file with example sentences (sentences are taken from column "Hit", column "instance" determines whether the sentence contains the target)
+        
+        *size_ratio*: the desired sample size, either an integer indicating the absolute sample size (only option if `proportionate`==False) or as a float indicating the sample size relative to the original dataset
+        
+        *proportionate*: True (default) creates proportionate sampling for the featue `instance`, False creates a disproportionate sample (size_ratio must be an integer in this case)
+        
+    """
+    df = pd.read_csv(csv)
+    if proportionate:
+        if type(size_ratio) == float: 
+            print(f'Creating proportionate sample with a relative size of {size_ratio} of the original dataset')
+            sample = df.groupby('Grade', group_keys=False).apply(lambda x: x.sample(frac=size_ratio))
+        elif type(size_ratio) == int:
+            print(f'Creating proportionate sample with an absolute size of {size_ratio}')
+            group_counts = df['instance'].value_counts(normalize=True)
+            group_sizes = (group_counts * size_ratio).round().astype(int)
+            sample = pd.concat([
+                df[df['instance'] == grp].sample(n=size, random_state=42)
+                    for grp, size in group_sizes.items()
+                    ])
+        else:
+            print('Error: size_ratio needs to be an integer indicating the desired sample size or a float indicating the sample size relative to the total dataset size when generating a proportionate sample')
+            return None
 
+    else:
+        if type(size_ratio) == int:
+            print(f'Creating disproportionate sample with an absolute size of {size_ratio}')
+            sample = df.groupby('Grade', group_keys=False).apply(lambda x: x.sample(total_size/2))
+        else:
+            print('Error: size_ratio needs to be an integer indicating the desired sample size when generating a disproportionate sample')
+            return None
+        
+        return sample['Hit'].to_list()
 

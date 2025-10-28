@@ -1055,22 +1055,27 @@ def string_in_apc_df_out(string, trainer, tokenizer, language='german' , inclpro
 
 
 def get_sample_sents(csv,size_ratio,proportionate=True):
-    """Returns a list of sample sentences from a structured csv
-    
-    args:
-    
-        *csv*: filepath to csv file with example sentences (sentences are taken from column "Hit", column "instance" determines whether the sentence contains the target)
-        
-        *size_ratio*: the desired sample size, either an integer indicating the absolute sample size (only option if `proportionate`==False) or as a float indicating the sample size relative to the original dataset
-        
-        *proportionate*: True (default) creates proportionate sampling for the featue `instance`, False creates a disproportionate sample (size_ratio must be an integer in this case)
-        
+    """
+    Returns a list of sample sentences from a structured CSV.
+
+    Args:
+        csv (str): Path to CSV file with example sentences.
+                   Column "Hit" contains the sentences,
+                   column "instance" indicates whether the sentence contains the target (0 or 1).
+        size_ratio (float|int): Desired sample size.
+            - If proportionate=True:
+                * float → fraction of dataset (e.g. 0.6)
+                * int   → absolute sample size
+            - If proportionate=False:
+                * int   → absolute total size (split evenly across groups)
+        proportionate (bool): Whether to preserve ratio of instance values.
     """
     df = pd.read_csv(csv)
     if proportionate:
         if type(size_ratio) == float: 
             print(f'Creating proportionate sample with a relative size of {size_ratio} of the original dataset')
             sample = df.groupby('instance', group_keys=False).apply(lambda x: x.sample(frac=size_ratio))
+            print(sample.head())
         elif type(size_ratio) == int:
             print(f'Creating proportionate sample with an absolute size of {size_ratio}')
             group_counts = df['instance'].value_counts(normalize=True)
@@ -1086,10 +1091,16 @@ def get_sample_sents(csv,size_ratio,proportionate=True):
     else:
         if type(size_ratio) == int:
             print(f'Creating disproportionate sample with an absolute size of {size_ratio}')
-            sample = df.groupby('instance', group_keys=False).apply(lambda x: x.sample(total_size/2))
+            n_groups = df['instance'].nunique()
+            n_per_group = int(round(size_ratio / n_groups))
+            
+            sample = pd.concat([
+                df_group.sample(n=min(len(df_group), n_per_group), random_state=42)
+                for _, df_group in df.groupby('instance')
+            ])
         else:
             print('Error: size_ratio needs to be an integer indicating the desired sample size when generating a disproportionate sample')
             return None
-        
-        return sample['Hit'].to_list()
+    
+    return sample['Hit'].to_list()
 

@@ -10,11 +10,33 @@ from auxiliary import *
 
 
 # %% load model
-output_model_path = '../models/BERTfull_GER-APC'
+output_model_path = '../models/bert-apc-detector-ger'
 
 tokenizer = AutoTokenizer.from_pretrained(output_model_path)
 
 tunedmodel = AutoModelForTokenClassification.from_pretrained(output_model_path)
+
+
+# %%
+
+print(tunedmodel.config.id2label)
+print(tunedmodel.config.label2id)
+
+tunedmodel.config.id2label = {
+    0: "B-APC",
+    1: "I-APC",
+    2: "O"
+}
+
+tunedmodel.config.label2id = {
+    "B-APC": 0,
+    "I-APC": 1,
+    "O": 2
+}
+
+# %%
+
+tunedmodel.save_pretrained(output_model_path)
 
 #%%
 
@@ -70,6 +92,9 @@ print("Length:", len(predictions_output) if hasattr(predictions_output, '__len__
 if isinstance(predictions_output, list):
     print("First few shapes:", [np.array(p).shape for p in predictions_output[:5]])
     print("Sample prediction:", predictions_output[0] if len(predictions_output) > 0 else 'Empty')
+
+# %%
+print(predictions_output)
 
 #%%
 test.import_predictions(predictions_output)

@@ -37,15 +37,15 @@ def timeit(func):
 
 
 
-# class for data input and pre-processing
+# class for data input, pre- and post-processing
 class APCData:
     def __init__(self, training=False,language="german", csvfile=None, strinput=None, tokenizer=None):
         # setting core properties of data
         self.language=language              # marks (main) language of dataset
-        self.training = training            # markes whether data set is annotated as training data
+        self.training = training            # marks whether data set is annotated as training data
         self.tokenizer = tokenizer
         self.dataset = None                 # Primary data storage
-        self.df = None                      # Keep for backward compatibility or if specific Pandas operations are truly needed
+        self.df = None                      # Pandas data storage
         self.tokenized_dataset = None       # Stores the chunked, tokenized data
         self.aligned_predictions_data = None # Stores the consolidated predictions aligned to original examples
         

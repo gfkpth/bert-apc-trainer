@@ -75,6 +75,20 @@ trainer.train()
 tunedmodel = trainer.model
 
 output_model_path = '../models/BERTfixedtrain_3epochs'
+
+tunedmodel.config.id2label = {
+    0: "B-APC",
+    1: "I-APC",
+    2: "O"
+}
+
+tunedmodel.config.label2id = {
+    "B-APC": 0,
+    "I-APC": 1,
+    "O": 2
+}
+
+
 tunedmodel.save_pretrained(output_model_path)
 tokenizer.save_pretrained(output_model_path) # Always save the tokenizer with the model!
 
@@ -274,6 +288,17 @@ trainer.train()
 tunedmodel = trainer.model
 
 output_model_path = '../models/BERT-EN-manualfixes_v1'
+tunedmodel.config.id2label = {
+    0: "B-APC",
+    1: "I-APC",
+    2: "O"
+}
+
+tunedmodel.config.label2id = {
+    "B-APC": 0,
+    "I-APC": 1,
+    "O": 2
+}
 tunedmodel.save_pretrained(output_model_path)
 tokenizer.save_pretrained(output_model_path) # Always save the tokenizer with the model!
 

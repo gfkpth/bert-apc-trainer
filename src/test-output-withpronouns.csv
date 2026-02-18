@@ -1,0 +1,23 @@
+,ContextBefore,Hit,ContextAfter,instance,APC
+0,,"
+Das ist ein interessanter Text, den wir Linguisten sehr mögen.","Natürlich könnte ich auch anders gestrickt sein, aber tatsächlich ist er für mich Syntaktiker besonders spannend.",1,wir Linguisten
+1,"
+Das ist ein interessanter Text, den wir Linguisten sehr mögen.","Natürlich könnte ich auch anders gestrickt sein, aber tatsächlich ist er für mich Syntaktiker besonders spannend.","Leider ist es aber auch nicht so leicht, sich Texte auszudenken.",1,mich Syntaktiker
+2,"
+Das ist ein interessanter Text, den wir Linguisten sehr mögen.","Natürlich könnte ich auch anders gestrickt sein, aber tatsächlich ist er für mich Syntaktiker besonders spannend.","Leider ist es aber auch nicht so leicht, sich Texte auszudenken.",0,ich
+3,"Leider ist es aber auch nicht so leicht, sich Texte auszudenken.","Später können wir das mal automatisch machen, aber wie ich euch Computerlinguisten einschätze, wisst ihr das sicherlich schon.","Erstmal bleibe ich bei der guten, alten Handarbeit.",0,wir
+4,"Leider ist es aber auch nicht so leicht, sich Texte auszudenken.","Später können wir das mal automatisch machen, aber wie ich euch Computerlinguisten einschätze, wisst ihr das sicherlich schon.","Erstmal bleibe ich bei der guten, alten Handarbeit.",0,ich
+5,"Leider ist es aber auch nicht so leicht, sich Texte auszudenken.","Später können wir das mal automatisch machen, aber wie ich euch Computerlinguisten einschätze, wisst ihr das sicherlich schon.","Erstmal bleibe ich bei der guten, alten Handarbeit.",0,euch
+6,"Leider ist es aber auch nicht so leicht, sich Texte auszudenken.","Später können wir das mal automatisch machen, aber wie ich euch Computerlinguisten einschätze, wisst ihr das sicherlich schon.","Erstmal bleibe ich bei der guten, alten Handarbeit.",0,ihr
+7,"Später können wir das mal automatisch machen, aber wie ich euch Computerlinguisten einschätze, wisst ihr das sicherlich schon.","Erstmal bleibe ich bei der guten, alten Handarbeit.","Das kann mir niemand verdenken, auch nicht ihr lachhaften Neider.",0,ich
+8,"Erstmal bleibe ich bei der guten, alten Handarbeit.","Das kann mir niemand verdenken, auch nicht ihr lachhaften Neider.","Ihr langweiligen Spießer der Moderne, da wundert ihr euch, was?",1,ihr lachhaften Neider
+9,"Erstmal bleibe ich bei der guten, alten Handarbeit.","Das kann mir niemand verdenken, auch nicht ihr lachhaften Neider.","Ihr langweiligen Spießer der Moderne, da wundert ihr euch, was?",0,mir
+10,"Das kann mir niemand verdenken, auch nicht ihr lachhaften Neider.","Ihr langweiligen Spießer der Moderne, da wundert ihr euch, was?","Das ist schon ein schwerer Satz, mit dem kann man euch Philister auch etwas quälen.",1,Ihr langweiligen Spießer der Moderne
+11,"Das kann mir niemand verdenken, auch nicht ihr lachhaften Neider.","Ihr langweiligen Spießer der Moderne, da wundert ihr euch, was?","Das ist schon ein schwerer Satz, mit dem kann man euch Philister auch etwas quälen.",0,ihr
+12,"Das kann mir niemand verdenken, auch nicht ihr lachhaften Neider.","Ihr langweiligen Spießer der Moderne, da wundert ihr euch, was?","Das ist schon ein schwerer Satz, mit dem kann man euch Philister auch etwas quälen.",0,euch
+13,"Ihr langweiligen Spießer der Moderne, da wundert ihr euch, was?","Das ist schon ein schwerer Satz, mit dem kann man euch Philister auch etwas quälen.",Und du Idiot da in der Ecke brauchst gar nicht zu lachen.,1,euch Philister
+14,"Das ist schon ein schwerer Satz, mit dem kann man euch Philister auch etwas quälen.",Und du Idiot da in der Ecke brauchst gar nicht zu lachen.,Für mich ernsthaften Akademiker sind das sehr ernste Fragen.,1,du Idiot da in der Ecke
+15,Und du Idiot da in der Ecke brauchst gar nicht zu lachen.,Für mich ernsthaften Akademiker sind das sehr ernste Fragen.,Eigentlich haben wir Tiere nur im Zoo gesehen.,1,mich ernsthaften Akademiker
+16,Für mich ernsthaften Akademiker sind das sehr ernste Fragen.,Eigentlich haben wir Tiere nur im Zoo gesehen.,"Da wollen die mich Idiot nennen, ich glaub's gar nicht.",0,wir
+17,Eigentlich haben wir Tiere nur im Zoo gesehen.,"Da wollen die mich Idiot nennen, ich glaub's gar nicht.",,0,mich
+18,Eigentlich haben wir Tiere nur im Zoo gesehen.,"Da wollen die mich Idiot nennen, ich glaub's gar nicht.",,0,ich

@@ -881,3 +881,81 @@ if __name__ == '__main__':
     import os
     os.remove("dummy_data.csv")
 ```
+
+
+
+# Modify labelling to BILOU instead of BIO
+
+
+what will require some extra care is probably the resolution of conflicts in labelling for the embeddings, but I guess one just needs to make sure that only an O or I-APC can be replaced by a new label (i.e. we don't want to accidentally overwrite an L-APC with an I-APC, as that would be incompatible with a coherent constituent structure
+
+Exactly — you’ve nailed the subtlety. With BILOU, the token labels now carry structural constraints, so your preprocessing logic has to enforce valid transitions to avoid incoherent sequences.
+
+1️⃣ Valid Transitions in BILOU
+
+For a given APC token sequence, the allowed transitions are roughly:
+
+Current label	Allowed next label
+O	O, B-APC, U-APC
+B-APC	I-APC, L-APC
+I-APC	I-APC, L-APC
+L-APC	O, B-APC, U-APC
+U-APC	O, B-APC, U-APC
+
+⚡ Key points:
+
+You should not overwrite an L-APC with an I-APC — that would break the span boundary.
+
+Only O or I can be “absorbed” or replaced when resolving multiple overlapping annotations.
+
+This ensures coherent constituent spans.
+
+2️⃣ How this applies in your preprocessing
+
+When you merge APCs into token-level labels from your tabular data:
+
+Iterate over each APC span in the sentence.
+
+For each token in the span:
+
+First token → assign B (unless it’s single-token → U)
+
+Middle tokens → assign I
+
+Last token → assign L
+
+If a token is already labeled:
+
+If it’s O → safe to overwrite
+
+If it’s I → may overwrite if the new APC spans the same or larger span
+
+If it’s L or U → do not overwrite
+
+This preserves the structural integrity of each APC span.
+
+3️⃣ Implementation Hint
+
+If your data is tabular (one APC per row), the “conflict resolution” might look like:
+
+for apc_span in sentence_apcs:
+    for i, token_idx in enumerate(span_token_indices):
+        new_label = determine_BILOU_label(i, len(span_token_indices))
+        if token_labels[token_idx] in ("O", "I-APC"):
+            token_labels[token_idx] = new_label
+        # else: skip to preserve existing L/U
+
+
+determine_BILOU_label returns B/I/L/U depending on token position
+
+Ensures no L/U is overwritten accidentally
+
+✅ Bottom Line
+
+BILOU introduces structural constraints you must respect during preprocessing.
+
+Only overwrite O or I tokens; never overwrite L or U tokens.
+
+This preserves coherent constituents for syntactic APC spans.
+
+Once the preprocessing is correct, your model can learn proper span boundaries, and post-processing for brackets is much simpler.

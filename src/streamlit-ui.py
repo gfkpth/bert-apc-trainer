@@ -77,8 +77,12 @@ models = [
      "path": "../models/BERTfull_GER-APC"},
     {"label": "english",
      "language": "english", 
-     "display": "English (BERT-EN-3epochs)", 
-     "path": "../models/BERT-EN-3epochs"}
+     "display": "English (BERT-EN-v1)", 
+     "path": "../models/BERT-EN-3epochs_v1"},
+    {"label": "english",
+     "language": "english", 
+     "display": "English (BERT-EN-manualfixes)", 
+     "path": "../models/BERT-EN-manualfixes_v1"}
 ]
 
 # Load the selected model based on dropdown

@@ -10,7 +10,7 @@ I trained the transformer model [`bert-base-german-cased`](https://huggingface.c
 
 The resulting model has a size of about 415 MB and achieves 99.7% accuracy on initial evaluation.
 
-Similarly, I trained the English ['bert-base-uncased]() model on a similarly annotated dataset extracted from the Britihs National Corpus.
+Similarly, I trained the English ['bert-base-uncased](https://huggingface.co/google-bert/bert-base-uncased) model on a similarly annotated dataset extracted from the [British National Corpus](https://www.natcorp.ox.ac.uk/).
 
 Both models are can be accessed for inferencing with a basic convenience function that takes a (potentially very long) string and returns a dataframe listing all discovered APCs (and optionally also pronouns) and their corresponding sentences, as well as their  left and right context. Moreover, a simple streamlit app was created for demo purposes. 
 
@@ -85,11 +85,15 @@ display(df)
 # Overview
 
 - [src/](src/): contains the source code
-  - [EDA.ipynb](src/EDA.ipynb): some basic EDA on the original data (due to copyright restrictions the original training data cannot be shared)
   - [auxiliary.py](src/auxiliary.py): contains some helper functions and the APCData class, which 
   - [trainer.py](src/trainer.py): code for training and basic evaluation of the models, basic testing of the functionality of convenience function for model I/O using the `APCData` class 
   - [streamlit-ui.py](src/streamlit-ui.py): code for the streamlit demo application
 - [data/](data/): contains two test files for the streamlit application (training data or test output can also be expected here)
+- [notebook/](notebook/): 
+  - [EDA_BNC.ipynb](notebook/EDA_BNC.ipynb): some basic EDA on the original data (due to copyright restrictions the original training data cannot be shared)
+  - [EDA_DWDS.ipynb](notebook/EDA_DWDS.ipynb): some basic EDA on the original data (due to copyright restrictions the original training data cannot be shared)
+  - [GER_nounlist.csv](notebook/GER_nounlist.csv): detailed overview of frequency distribution of head nouns within the German/DWDS data
+  - [GER_nounlist-plain.txt](notebook/GER_nounlist-plain.txt): a plain text list of the nouns attested in APC contexts in the German/DWDS dataset
 - [presentation](presentation/): a presentation of the project at the Ironhack Data Science bootcamp
 - [assets](assets/): assets for the presentation
 

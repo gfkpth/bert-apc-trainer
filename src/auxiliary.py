@@ -39,11 +39,15 @@ def timeit(func):
 
 # class for data input, pre- and post-processing
 class APCData:
-    def __init__(self, training=False,language="german", csvfile=None, strinput=None, tokenizer=None):
+    def __init__(self, training=False,language="german", csvfile=None, strinput=None, tokenizer=None, label_scheme="bilou"):
         # setting core properties of data
         self.language=language              # marks (main) language of dataset
         self.training = training            # marks whether data set is annotated as training data
         self.tokenizer = tokenizer
+        if label_scheme in ['bilou', 'bio']:
+            self.label_scheme = label_scheme
+        else:
+            print('Error with label_scheme. Ensure ')
         self.dataset = None                 # Primary data storage
         self.df = None                      # Pandas data storage
         self.tokenized_dataset = None       # Stores the chunked, tokenized data

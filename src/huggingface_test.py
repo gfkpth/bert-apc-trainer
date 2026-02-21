@@ -4,10 +4,8 @@ from dotenv import load_dotenv
 
 from huggingface_hub import InferenceClient
 
-print("CWD:", os.getcwd())
 load_dotenv()
 HF_TOKEN = os.getenv('HF_TOKEN')
-print(HF_TOKEN)
 
 # %%
 client = InferenceClient(

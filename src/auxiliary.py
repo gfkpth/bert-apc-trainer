@@ -22,6 +22,8 @@ import evaluate
 from sklearn.model_selection import train_test_split
 #from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
+from huggingface_hub import ModelCard
+
 
 
 def timeit(func):
@@ -54,6 +56,7 @@ class APCData:
         """
         
         # extract config data
+        print("Loading config")
         with open(config_file, "r") as f:
             self.config = yaml.safe_load(f)
         
@@ -73,26 +76,31 @@ class APCData:
         else:
             raise ValueError("Undefined value for label_scheme, allowed values: bilou (default) or bio.")
         
+        print("Loading model and tokenizer")
         # import tokenizer and model
         # number of labels for classification determined by length of `label_list`
         self.tokenizer = AutoTokenizer.from_pretrained(self.config["modelname"]) 
         self.model = AutoModelForTokenClassification.from_pretrained(self.config["modelname"], num_labels=len(self.label_list))
+        
+        # Set label mappings in model config for clean inference
+        self.model.config.id2label = self.id2label
+        self.model.config.label2id = self.label2id
 
+        print("Setting up TrainingArguments")
         self.training_args = TrainingArguments(
             output_dir=self.config["output_dir"],
-            evaluation_strategy=self.config["evaluation_strategy"],
+            eval_strategy=self.config["eval_strategy"],
             save_strategy=self.config["save_strategy"],
-            learning_rate=self.config["learning_rate"],
-            per_device_train_batch_size=self.config["per_device_train_batch_size"],
-            per_device_eval_batch_size=self.config["per_device_eval_batch_size"],
-            num_train_epochs=self.config["num_train_epochs"],
-            weight_decay=self.config["weight_decay"],
-            logging_dir="./logs",
-            logging_steps=10,
-            save_total_limit=self.config["save_total_limit"],
+            metric_for_best_model=self.config["metric_for_best_model"],
+            learning_rate=float(self.config["learning_rate"]),
+            per_device_train_batch_size=int(self.config["per_device_train_batch_size"]),
+            per_device_eval_batch_size=int(self.config["per_device_eval_batch_size"]),
+            num_train_epochs=int(self.config["num_train_epochs"]),
+            weight_decay=float(self.config["weight_decay"]),
+            logging_steps=int(self.config["logging_steps"]),
+            save_total_limit=int(self.config["save_total_limit"]),
             push_to_hub=self.config["push_to_hub"], 
             hub_model_id=self.config["hub_model_id"], 
-            revision=self.config["hf_revision"],
             hub_strategy=self.config["hub_strategy"]
         )
         
@@ -115,6 +123,69 @@ class APCData:
         self.precision_metric = evaluate.load("precision")
         self.recall_metric = evaluate.load("recall")
 
+    @classmethod
+    def from_pretrained(cls, model_id: str, model_config: str = "german-bilou", config_file: str = "config.yaml"):
+        """Load a pre-trained model from Hub or local directory for evaluation."""
+        instance = cls.__new__(cls)
+        instance.config_file = config_file
+        
+        # Load config
+        with open(config_file, "r") as f:
+            config = yaml.safe_load(f)
+        instance.config = {**config["training"], **config[model_config]}
+        
+        # Set up labels
+        if instance.config["label_scheme"] == 'bilou':
+            instance.label_list = ["B-APC", "I-APC", "L-APC", "U-APC", "O"]
+        else:
+            instance.label_list = ["B-APC", "I-APC", "O"]
+        
+        instance.label2id = {label: idx for idx, label in enumerate(instance.label_list)}
+        instance.id2label = {idx: label for idx, label in enumerate(instance.label_list)}
+        
+        # Determine if loading from local path or Hub
+        local_files_only = os.path.isdir(model_id)
+        
+        # Load model and tokenizer from Hub/local
+        instance.tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=local_files_only)
+        instance.model = AutoModelForTokenClassification.from_pretrained(model_id, local_files_only=local_files_only)
+        
+        # Set label mappings in model config for clean inference (in case they're missing)
+        instance.model.config.id2label = instance.id2label
+        instance.model.config.label2id = instance.label2id
+        
+        # Set up TrainingArguments for evaluation
+        print("Setting up TrainingArguments for evaluation")
+        instance.training_args = TrainingArguments(
+            output_dir=instance.config["output_dir"],
+            eval_strategy=instance.config["eval_strategy"],
+            save_strategy=instance.config["save_strategy"],
+            metric_for_best_model=instance.config["metric_for_best_model"],
+            learning_rate=float(instance.config["learning_rate"]),
+            per_device_train_batch_size=int(instance.config["per_device_train_batch_size"]),
+            per_device_eval_batch_size=int(instance.config["per_device_eval_batch_size"]),
+            num_train_epochs=int(instance.config["num_train_epochs"]),
+            weight_decay=float(instance.config["weight_decay"]),
+            logging_steps=int(instance.config["logging_steps"]),
+            save_total_limit=int(instance.config["save_total_limit"]),
+            push_to_hub=instance.config["push_to_hub"], 
+            hub_model_id=instance.config["hub_model_id"], 
+            hub_strategy=instance.config["hub_strategy"]
+        )
+        
+        # Initialize data storage (for convenience, but not used in eval mode)
+        instance.trainer = None
+        instance.dataset = None
+        instance.df = None
+        instance.tokenized_dataset = None
+        
+        # Initialize evaluation metrics
+        instance.accuracy_metric = evaluate.load("accuracy")
+        instance.f1_metric = evaluate.load("f1")
+        instance.precision_metric = evaluate.load("precision")
+        instance.recall_metric = evaluate.load("recall")
+        
+        return instance
 
     # INPUT METHOD
     
@@ -594,7 +665,7 @@ class APCData:
         })
         
         # tokenize
-        print(f'Running tokenization and {self.config["label_type"]} labeling')
+        print(f'Running tokenization and {self.config["label_scheme"]} labeling')
         
         tokenized_splits = DatasetDict()
         for split_name, dataset_obj in self.dataset.items():
@@ -632,12 +703,12 @@ class APCData:
         self.trainer = Trainer(
             model=self.model,
             args=self.training_args,
-            train_dataset=self.tokenised_dataset['train'],
-            eval_dataset=self.tokenised_dataset['validation'],
+            train_dataset=self.tokenized_dataset['train'],
+            eval_dataset=self.tokenized_dataset['validation'],
             processing_class=self.tokenizer,
-            compute_metrics=self.compute_metrics,
-            callbacks=[LogToHubCallback()]
+            compute_metrics=self.compute_metrics
         )
+        print("Trainer has been set up")
         
     @timeit
     def run_trainer(self):
@@ -645,19 +716,130 @@ class APCData:
         """
         print("Running training on dataset")
         print("Training arguments:")
-        print(self.training_arguments)
+        print(self.training_args)
         
         self.trainer.train()
+        print("Training finished")
+    
+    
+    def create_model_card(self, eval_results:dict, revision:str=None):
+        """Create and push model card with evaluation results"""
+        
+        # Read template
+        with open(self.config["model_card_template"], "r") as f:
+            template = f.read()
+        
+        # Get number of test samples if available
+        num_test_samples = 0
+        if self.tokenized_dataset and 'test' in self.tokenized_dataset:
+            num_test_samples = len(self.tokenized_dataset['test'])
+        
+        # Fill in dynamic values using safe string replacement
+        replacements = {
+            "{learning_rate}": str(self.config["learning_rate"]),
+            "{batch_size}": str(self.config["per_device_train_batch_size"]),
+            "{num_epochs}": str(self.config["num_train_epochs"]),
+            "{accuracy:.4f}": f"{eval_results.get('eval_accuracy', 0):.4f}",
+            "{f1:.4f}": f"{eval_results.get('eval_f1', 0):.4f}",
+            "{precision:.4f}": f"{eval_results.get('eval_precision', 0):.4f}",
+            "{recall:.4f}": f"{eval_results.get('eval_recall', 0):.4f}",
+            "{num_test_samples}": str(num_test_samples)
+        }
+        
+        card_content = template
+        for placeholder, value in replacements.items():
+            card_content = card_content.replace(placeholder, value)
+        
+        # Push to Hub
+        card = ModelCard(card_content)
+        card.push_to_hub(self.config["hub_model_id"], commit_message="Updated model card", revision=revision)
+        print("Model card pushed")    
+        
+    def push_model_to_hub(self, commit_message:str, revision:str=None, eval_results:dict=None):
+        """Push model to huggingface hub
+        
+        The model id is read from config.yaml
+
+        Args:
+            commit_message (str): Commit message
+            revision (str, optional): Label for indicating revision. Defaults to None.
+            eval_results (dict, optional): Evaluation results to include in model card
+        """
+        print(f"Pushing model to hub at {self.config['hub_model_id']}")
+        print(f"  Repository ID: {self.config['hub_model_id']}")
+        print(f"  Revision: {revision}")
+        print(f"  Commit message: {commit_message}")
+        print(f"  Trainer exists: {self.trainer is not None}")
+        
+        # Ensure label mappings are set in model config before pushing
+        self.model.config.id2label = self.id2label
+        self.model.config.label2id = self.label2id
+        print(f"  Label mappings: {len(self.id2label)} labels configured")
+        
+        # If trainer exists (from regular training), use it
+        if self.trainer is not None:
+            print("Using Trainer.push_to_hub()...")
+            try:
+                self.trainer.push_to_hub(commit_message=commit_message, revision=revision)
+                print("✓ Trainer push successful")
+            except Exception as e:
+                print(f"✗ Trainer push failed: {e}")
+        else:
+            # Otherwise, push model and tokenizer directly (for from_pretrained workflow)
+            print("Using direct model/tokenizer push...")
+            try:
+                print("  → Pushing model...")
+                self.model.push_to_hub(
+                    repo_id=self.config["hub_model_id"],
+                    commit_message=commit_message,
+                    revision=revision
+                )
+                print("  ✓ Model pushed")
+            except Exception as e:
+                print(f"  ✗ Model push failed: {e}")
+            
+            try:
+                print("  → Pushing tokenizer...")
+                self.tokenizer.push_to_hub(
+                    repo_id=self.config["hub_model_id"],
+                    commit_message=commit_message,
+                    revision=revision
+                )
+                print("  ✓ Tokenizer pushed")
+            except Exception as e:
+                print(f"  ✗ Tokenizer push failed: {e}")
+    
+        # Push model card if evaluation results provided
+        if eval_results:
+            print("Creating and pushing model card...")
+            try:
+                self.create_model_card(eval_results, revision)
+                print("✓ Model card pushed")
+            except Exception as e:
+                print(f"✗ Model card push failed: {e}")
+            self.create_model_card(eval_results, revision)
+    
+    def save_model_locally(self, path:str=None):
+        """Save model locally
+
+        Args:
+            path (str, optional): Local path. Defaults to None, in which case the configured output_dir from config_yaml is used.
+        """
+        path = self.config["output_dir"] if path == None else path
+        print(f"Saving model in {path}")
+        self.trainer.save_pretrained(path)
+    
     
     
     ############################
     # MODEL EVALUATION
     def evaluate_model(self):
-        """_summary_
-
-        Returns:
-            _type_: _description_
+        """Evaluate the model on test dataset
+        
+        Evaluation metrics are logged to evaluation_logs/evaluation_log.txt and returned
         """
+        if not self.tokenized_dataset['test']:
+            raise ValueError("")
         print("Running evaluation of test dataset")
         eval_trainer = Trainer(
             model=self.model,
@@ -744,19 +926,29 @@ class APCData:
         else:
             raise ValueError("No tokenized dataset available. Run tokenize_dataset() first.")
         
-    def save_datasets(self, path):
-        """Save processed datasets to disk"""
+    def save_datasets(self, path:str=None):
+        """Save processed datasets to disk
+        
+        Args:
+            path (str, optional): Path to dataset. If argument is None, path is taken from config
+        """
         if self.tokenized_dataset is None:
             raise ValueError("No datasets to save. Process data first.")
         
+        path = self.config["dataset_dir"] if path == None else path
         self.tokenized_dataset.save_to_disk(path)
         print(f"Datasets saved to {path}")
 
-    def load_datasets(self, path):
-        """Load processed datasets from disk"""
+    def load_datasets(self, path:str=None):
+        """Load pre-processed DatasetDict containing training, validation and test data from disk
+
+        Args:
+            path (str, optional): Path to dataset. If argument is None, path is taken from config
+        """
+        path = self.config["dataset_dir"] if path == None else path
+        
         self.tokenized_dataset = DatasetDict.load_from_disk(path)
         print(f"Datasets loaded from {path}")
-        return self.tokenized_dataset
 
     def get_datasets(self):
         """Return the DatasetDict"""

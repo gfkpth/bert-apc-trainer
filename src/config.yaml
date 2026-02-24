@@ -4,16 +4,18 @@ training:
   max_length: 128
   overlap_size: 32
   num_proc: 12
+  random_state: 21
   # TrainerArguments
-  evaluation_strategy: "epoch"
+  eval_strategy: "epoch"
   save_strategy: "best"
+  metric_for_best_model: "f1"
   learning_rate: 2e-5
   per_device_train_batch_size: 16
   per_device_eval_batch_size: 64
   num_train_epochs: 3
   weight_decay: 0.01
   save_total_limit: 3
-  push_to_hub: True
+  push_to_hub: False
   hub_strategy: "end"
   logging_dir: "./logs"
   logging_steps: 10
@@ -22,39 +24,39 @@ training:
 # model_config
 german-bilou:
   datacsv: "../data/copyright/DWDS_APC_main_redux.csv"
+  dataset_dir: "../data/copyright/ger-bilou-datasets-processed"
   modelname: "bert-base-german-cased"
+  model_card_template: "model_card_templates/bert-apc-detector-ger.md"
+  label_scheme: "bilou"
   language: "german"
   # TrainerArgs
   output_dir: "../models/bert-apc-detector-ger"
   hub_model_id: "gfkpth/bert-apc-detector-ger"
   hf_revision: "bilou-v1"
-  label_scheme: "bilou"
   save_only_model: True
 
 german-bio:
   datacsv: "../data/copyright/DWDS_APC_main_redux.csv"
+  dataset_dir: "../data/copyright/ger-bio-datasets-processed"
   modelname: "bert-base-german-cased"
-  language: "german"
-  hub_model_id: ""
-  hf_revision: "bio-v1"
-  local_path: ""
   label_scheme: "bio"
+  language: "german"
+  # TrainerArgs
+  output_dir: "../models/bert-apc-detector-ger-bio"
+  hub_model_id: "gfkpth/bert-apc-detector-ger"
+  hf_revision: "bio-v1"
+  save_only_model: True
 
 english-bilou:
   datacsv: "../data/copyright/BNC_combined_we_you_redux.csv"
+  dataset_dir: "../data/copyright/en-bilou-datasets-processed"
+  model_card_template: "model_card_templates/bert-apc-detector-en.md"
   modelname: "bert-base-uncased"
-  language: "english"
-  hub_model_id: ""
-  local_path: ""
   label_scheme: "bilou"
-
-
-
-
-            output_dir="./results",  # Local directory for saving results
-            
-            
-            push_to_hub=True,  # Enable pushing to the Hub
-            hub_model_id="your_username/your_apc_model", # Replace with your repo ID
-            revision="bilou",  # This creates a new version called "bilou"
-            hub_strategy="end", # push to hub at end of training
+  language: "english"
+  # TrainerArgs
+  output_dir: "../models/bert-apc-detector-en"
+  hub_model_id: "gfkpth/bert-apc-detector-en"
+  hf_revision: "bilou-v1"
+  label_scheme: "bilou"
+  save_only_model: True
